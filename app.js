@@ -84,6 +84,7 @@ const domRefs = {
   jsonView: document.getElementById('json-view'),
   inspector: document.getElementById('inspector'),
   svcList: document.getElementById('svc-list'),
+  connList: document.getElementById('conn-list'),
   contractList: document.getElementById('contract-list')
 };
 
@@ -100,8 +101,14 @@ function getEndpointBadge(ep) {
   if (ep.$class === 'PubSubChannel') return 'PUB';
   return '';
 }
+function getConnectionBadge(conn) {
+  if (conn.$class === 'SyncRequestResponse')  return { text: 'SYNC',   cls: 'sync' };
+  if (conn.$class === 'AsyncFireAndForget')   return { text: 'ASYNC',  cls: 'async' };
+  if (conn.$class === 'StreamingInteraction') return { text: 'STREAM', cls: 'stream' };
+  return { text: 'CONN', cls: 'sync' };
+}
 
-/* ---------- SVG HELPER (textContent как свойство, не атрибут) ---------- */
+/* ---------- SVG HELPER ---------- */
 function createSVGElement(tag, attributes) {
   const element = document.createElementNS(SVGNS, tag);
   for (const [key, value] of Object.entries(attributes)) {
@@ -226,11 +233,18 @@ function renderWire(conn, group) {
   const targetEp = conn.endpoint_ref ? state.endpoints.find(e => e.id === conn.endpoint_ref) : null;
 
   if (tgtSrv && targetEp) {
+    // Full link: source → endpoint of target
     const eps = state.endpoints.filter(e => e.service_ref === tgtSrv.id);
     const idx = eps.indexOf(targetEp);
     tx = tgtSrv.gui.x + tgtSrv.gui.width - CONFIG.CONNECTOR_OFFSET_X;
     ty = tgtSrv.gui.y + tgtSrv._headerH + idx * tgtSrv._rowH + tgtSrv._rowH / 2;
+  } else if (tgtSrv) {
+    // Target service picked but no endpoint yet: anchor to left edge of target
+    tx = tgtSrv.gui.x;
+    ty = tgtSrv.gui.y + tgtSrv._headerH / 2;
+    free = true;
   } else if (conn.gui.free_target_pos) {
+    // Fully free-floating end
     tx = conn.gui.free_target_pos.x;
     ty = conn.gui.free_target_pos.y;
     free = true;
@@ -272,9 +286,10 @@ function getWireColor(conn, ep) {
   return 'var(--accent)';
 }
 
-/* ---------- SIDEBAR ---------- */
+/* ---------- SIDEBAR: services ---------- */
 function renderSidebar() {
   document.getElementById('svc-count').textContent = state.services.length;
+  document.getElementById('conn-count').textContent = state.connections.length;
   document.getElementById('contract-count').textContent = state.contracts.length;
 
   domRefs.svcList.innerHTML = state.services.map(s =>
@@ -293,6 +308,47 @@ function renderSidebar() {
       </div>
     </div>`
   ).join('');
+}
+
+/* ---------- SIDEBAR: connections ---------- */
+function renderConnectionsList() {
+  if (!domRefs.connList) return;
+
+  domRefs.connList.innerHTML = state.connections.map(c => {
+    const badge = getConnectionBadge(c);
+    const isSelected = selection.type === 'connection' && selection.id === c.id;
+    const modeCls = c.contract_mode === 'override' ? 'override' : 'strict';
+
+    const targetHtml = c.target_ref
+      ? `<span class="tgt">${c.target_ref}</span>`
+      : `<span class="free">— повисла —</span>`;
+
+    const epHtml = c.endpoint_ref
+      ? `<span class="conn-ep">${c.endpoint_ref}</span>`
+      : `<span class="conn-ep free">null</span>`;
+
+    const cls = ['conn-list-item', badge.cls];
+    if (isSelected) cls.push('selected');
+    if (c.contract_mode === 'override') cls.push('override');
+
+    return `
+      <div class="${cls.join(' ')}" data-conn-id="${c.id}">
+        <div class="conn-head">
+          <span class="conn-class-badge ${badge.cls}">${badge.text}</span>
+          <span class="conn-name">${c.name}</span>
+        </div>
+        <div class="conn-route">
+          <span class="src">${c.source_ref || '—'}</span>
+          <span class="arr">→</span>
+          ${targetHtml}
+        </div>
+        <div class="conn-meta">
+          ${epHtml}
+          <span class="conn-mode ${modeCls}">${c.contract_mode}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 /* ---------- JSON VIEW ---------- */
@@ -361,6 +417,29 @@ function renderInspector() {
     const c = state.connections.find(x => x.id === selection.id);
     if (!c) return;
     const isOverride = c.contract_mode === 'override';
+
+    // Option lists for dropdowns
+    const classOptions = [
+      'SyncRequestResponse',
+      'AsyncFireAndForget',
+      'StreamingInteraction'
+    ].map(cls => `<option value="${cls}" ${c.$class === cls ? 'selected' : ''}>${cls}</option>`).join('');
+
+    const sourceOptions = state.services.map(s =>
+      `<option value="${s.id}" ${c.source_ref === s.id ? 'selected' : ''}>${s.name} (${s.id})</option>`
+    ).join('');
+
+    const targetOptions = `<option value="">— не выбрано (повисла) —</option>` +
+      state.services.map(s =>
+        `<option value="${s.id}" ${c.target_ref === s.id ? 'selected' : ''}>${s.name} (${s.id})</option>`
+      ).join('');
+
+    const endpointOptions = `<option value="">— не выбрано —</option>` +
+      state.endpoints
+        .filter(e => !c.target_ref || e.service_ref === c.target_ref)
+        .map(e => `<option value="${e.id}" ${c.endpoint_ref === e.id ? 'selected' : ''}>${e.id} · ${getEndpointLabel(e)}</option>`)
+        .join('');
+
     domRefs.inspector.innerHTML = `
       <div class="form-row">
         <label class="form-label">Название сценария</label>
@@ -368,17 +447,19 @@ function renderInspector() {
       </div>
       <div class="form-row">
         <label class="form-label">Класс взаимодействия</label>
-        <input class="form-input mono" value="${c.$class}" readonly>
+        <select class="form-select mono" data-conn-field="$class">${classOptions}</select>
       </div>
       <div class="form-row">
-        <label class="form-label">source_ref → target_ref</label>
-        <div class="form-input mono" style="font-size:10px;">
-          ${c.source_ref} → ${c.target_ref || '<span style="color:var(--warn)">null (повисла)</span>'}
-        </div>
+        <label class="form-label">source_ref</label>
+        <select class="form-select mono" data-conn-field="source_ref">${sourceOptions}</select>
+      </div>
+      <div class="form-row">
+        <label class="form-label">target_ref</label>
+        <select class="form-select mono" data-conn-field="target_ref">${targetOptions}</select>
       </div>
       <div class="form-row">
         <label class="form-label">endpoint_ref</label>
-        <div class="form-input mono" style="font-size:10px;">${c.endpoint_ref || '<span style="color:var(--warn)">null</span>'}</div>
+        <select class="form-select mono" data-conn-field="endpoint_ref">${endpointOptions}</select>
       </div>
       <div class="form-row">
         <label class="form-label">Режим контракта</label>
@@ -409,13 +490,34 @@ function renderInspector() {
       </div>` : ''}
       <button class="form-input" style="background:rgba(248,81,73,0.1);border-color:var(--danger);color:var(--danger);cursor:pointer;font-weight:600;" onclick="deleteConnection('${c.id}')">Удалить связь явно</button>
     `;
+
+    // Bind form controls
     domRefs.inspector.querySelectorAll('[data-conn-field]').forEach(el => {
       el.addEventListener('change', () => {
         const f = el.dataset.connField;
-        c[f] = el.type === 'number' ? +el.value : el.value;
+        let v = el.value;
+        if (v === '') v = null;
+        if (f === 'timeout_ms') v = +v;
+
+        c[f] = v;
+
+        // Cascade cleanup: if target_ref changed, drop stale endpoint_ref
+        if (f === 'target_ref' && c.endpoint_ref) {
+          const ep = state.endpoints.find(e => e.id === c.endpoint_ref);
+          if (!ep || (c.target_ref && ep.service_ref !== c.target_ref)) {
+            c.endpoint_ref = null;
+          }
+        }
+
+        // If source_ref changed, clear free position (wire anchors to new source automatically)
+        if (f === 'source_ref') {
+          delete c.gui.free_target_pos;
+        }
+
         renderAll();
       });
     });
+
     domRefs.inspector.querySelectorAll('.contract-mode button').forEach(b => {
       b.addEventListener('click', () => {
         c.contract_mode = b.dataset.mode;
@@ -476,6 +578,7 @@ function updateStats() {
 /* ---------- RENDER ALL ---------- */
 function renderAll() {
   renderSidebar();
+  renderConnectionsList();
   renderCanvas();
   renderInspector();
   renderJSON();
@@ -490,7 +593,6 @@ domRefs.svg.addEventListener('mousedown', (e) => {
   const target = e.target;
 
   // 1. Клик по шапке сервиса: сначала ВЫДЕЛЯЕМ, затем начинаем drag.
-  //    srv — ссылка на объект в state, поэтому перерисовка не рвёт drag.
   if (target.dataset.dragService) {
     const srv = state.services.find(s => s.id === target.dataset.dragService);
     if (!srv) return;
@@ -549,6 +651,7 @@ let newEndpointCounter = 1;
 document.querySelectorAll('[data-add]').forEach(el => {
   el.addEventListener('click', () => {
     const type = el.dataset.add;
+
     if (type === 'service') {
       const id = 'srv_new_' + Date.now().toString(36).slice(-4);
       state.services.push({
@@ -556,7 +659,8 @@ document.querySelectorAll('[data-add]').forEach(el => {
         endpoint_refs: [],
         gui: { x: 100 + Math.random() * 400, y: 400 + Math.random() * 200, width: 240 }
       });
-    } else if (type === 'rest') {
+    }
+    else if (type === 'rest') {
       const srvId = selection.type === 'service' && selection.id ? selection.id : state.services[0]?.id;
       if (!srvId) return;
       state.endpoints.push({
@@ -564,7 +668,8 @@ document.querySelectorAll('[data-add]').forEach(el => {
         service_ref: srvId, path: '/v1/new',
         method: 'GET', response: { status: 200, body_ref: 'contract_user_base' }
       });
-    } else if (type === 'grpc') {
+    }
+    else if (type === 'grpc') {
       const srvId = selection.type === 'service' && selection.id ? selection.id : state.services[0]?.id;
       if (!srvId) return;
       state.endpoints.push({
@@ -572,7 +677,8 @@ document.querySelectorAll('[data-add]').forEach(el => {
         service_ref: srvId, package: 'pkg.v1', service_name: 'Svc', rpc_method: 'Call',
         response: { body_ref: 'contract_payment_ok' }
       });
-    } else if (type === 'kafka') {
+    }
+    else if (type === 'kafka') {
       const srvId = selection.type === 'service' && selection.id ? selection.id : state.services[0]?.id;
       if (!srvId) return;
       state.endpoints.push({
@@ -581,6 +687,31 @@ document.querySelectorAll('[data-add]').forEach(el => {
         broker_type: 'kafka', message_schema_ref: 'contract_order'
       });
     }
+    else if (type === 'connection') {
+      // Use currently selected service as source, or fall back to first
+      const srcSrv =
+        (selection.type === 'service' && state.services.find(s => s.id === selection.id)) ||
+        state.services[0];
+      if (!srcSrv) {
+        alert('Сначала создайте хотя бы один сервис');
+        return;
+      }
+      const id = 'conn_new_' + Date.now().toString(36).slice(-4);
+      state.connections.push({
+        $class: 'SyncRequestResponse',
+        id,
+        name: 'Новая связь',
+        source_ref: srcSrv.id,
+        target_ref: null,
+        endpoint_ref: null,
+        contract_mode: 'strict',
+        timeout_ms: 1000,
+        retry_policy: { max_attempts: 1, backoff_factor: 1.0 },
+        gui: { free_target_pos: { x: srcSrv.gui.x + 420, y: srcSrv.gui.y + 180 } }
+      });
+      selection = { type: 'connection', id };
+    }
+
     renderAll();
   });
 });
@@ -608,6 +739,13 @@ domRefs.svcList.addEventListener('click', (e) => {
   const item = e.target.closest('[data-svc-id]');
   if (!item) return;
   selection = { type: 'service', id: item.dataset.svcId };
+  renderAll();
+});
+
+domRefs.connList.addEventListener('click', (e) => {
+  const item = e.target.closest('[data-conn-id]');
+  if (!item) return;
+  selection = { type: 'connection', id: item.dataset.connId };
   renderAll();
 });
 

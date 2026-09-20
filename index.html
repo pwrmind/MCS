@@ -27,39 +27,67 @@
 
   <!-- LEFT PANEL -->
   <aside class="left-panel">
-    <div class="panel-section">
-      <div class="panel-title">Палитра узлов</div>
-      <div class="palette-item" data-add="service">
-        <div class="palette-icon" style="background:var(--accent)">S</div>
-        <span>Микросервис</span>
-      </div>
-      <div class="palette-item" data-add="rest">
-        <div class="palette-icon pi-rest">R</div>
-        <span>REST Endpoint</span>
-      </div>
-      <div class="palette-item" data-add="grpc">
-        <div class="palette-icon pi-grpc">G</div>
-        <span>gRPC Endpoint</span>
-      </div>
-      <div class="palette-item" data-add="kafka">
-        <div class="palette-icon pi-kafka">K</div>
-        <span>Kafka Channel</span>
-      </div>
-    </div>
 
-    <div class="panel-section grow">
-      <div class="panel-title">
-        Сервисы <span class="count-badge" id="svc-count">0</span>
+    <!-- Палитра узлов -->
+    <details class="panel-section" open>
+      <summary class="panel-title"><span>Палитра узлов</span></summary>
+      <div class="panel-body">
+        <div class="palette-item" data-add="service">
+          <div class="palette-icon" style="background:var(--accent)">S</div>
+          <span>Микросервис</span>
+        </div>
+        <div class="palette-item" data-add="rest">
+          <div class="palette-icon pi-rest">R</div>
+          <span>REST Endpoint</span>
+        </div>
+        <div class="palette-item" data-add="grpc">
+          <div class="palette-icon pi-grpc">G</div>
+          <span>gRPC Endpoint</span>
+        </div>
+        <div class="palette-item" data-add="kafka">
+          <div class="palette-icon pi-kafka">K</div>
+          <span>Kafka Channel</span>
+        </div>
+        <div class="palette-item" data-add="connection">
+          <div class="palette-icon" style="background:linear-gradient(135deg,var(--accent),var(--grpc))">⇄</div>
+          <span>Новая связь</span>
+        </div>
       </div>
-      <div id="svc-list"></div>
-    </div>
+    </details>
 
-    <div class="panel-section grow">
-      <div class="panel-title">
-        Контракты <span class="count-badge" id="contract-count">0</span>
+    <!-- Сервисы -->
+    <details class="panel-section grow" open>
+      <summary class="panel-title">
+        <span>Сервисы</span>
+        <span class="count-badge" id="svc-count">0</span>
+      </summary>
+      <div class="panel-body">
+        <div id="svc-list"></div>
       </div>
-      <div id="contract-list"></div>
-    </div>
+    </details>
+
+    <!-- Связи -->
+    <details class="panel-section grow" open>
+      <summary class="panel-title">
+        <span>Связи</span>
+        <span class="count-badge" id="conn-count">0</span>
+      </summary>
+      <div class="panel-body">
+        <div id="conn-list"></div>
+      </div>
+    </details>
+
+    <!-- Контракты -->
+    <details class="panel-section grow" open>
+      <summary class="panel-title">
+        <span>Контракты</span>
+        <span class="count-badge" id="contract-count">0</span>
+      </summary>
+      <div class="panel-body">
+        <div id="contract-list"></div>
+      </div>
+    </details>
+
   </aside>
 
   <!-- CANVAS -->
