@@ -5,6 +5,17 @@
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 
+// Configuration constants
+const CONFIG = {
+  SERVICE_HEADER_HEIGHT: 36,
+  ENDPOINT_ROW_HEIGHT: 32,
+  ENDPOINT_PADDING: 10,
+  CONNECTOR_RADIUS: 6,
+  CONNECTOR_OFFSET_X: 14,
+  MIN_CURVE_DX: 60,
+  MAX_LABEL_LENGTH: 26,
+  GRID_SIZE: 24
+};
 
 /* ---------- STATE ---------- */
 const state = {
@@ -68,134 +79,112 @@ function reindex() {
 let selection = { type: null, id: null };
 
 /* ---------- DOM REFS ---------- */
-const svg        = document.getElementById('canvas');
-const canvasWrap = document.getElementById('canvas-wrap');
-const jsonView   = document.getElementById('json-view');
-const inspector  = document.getElementById('inspector');
-const svcList    = document.getElementById('svc-list');
-const contractList = document.getElementById('contract-list');
+const domRefs = {
+  svg: document.getElementById('canvas'),
+  canvasWrap: document.getElementById('canvas-wrap'),
+  jsonView: document.getElementById('json-view'),
+  inspector: document.getElementById('inspector'),
+  svcList: document.getElementById('svc-list'),
+  contractList: document.getElementById('contract-list')
+};
+
+/* ---------- HELPER FUNCTIONS ---------- */
+function truncateLabel(text, maxLength) {
+  return text.length > maxLength ? text.slice(0, maxLength - 1) + '…' : text;
+}
+
+function getEndpointLabel(ep) {
+  return ep.path || ep.topic_name || ep.rpc_method || ep.name;
+}
+
+function getEndpointBadge(ep) {
+  if (ep.$class === 'RestEndpoint') return ep.method;
+  if (ep.$class === 'GrpcEndpoint') return 'gRPC';
+  if (ep.$class === 'PubSubChannel') return 'PUB';
+  return '';
+}
 
 /* ---------- RENDER: SERVICES & ENDPOINTS ---------- */
 function renderCanvas() {
   reindex();
-  svg.innerHTML = '';
+  domRefs.domRefs.svg.innerHTML = '';
 
-  const wiresG = document.createElementNS(SVGNS, 'g');
-  wiresG.setAttribute('class', 'wires');
-  svg.appendChild(wiresG);
+  const wiresG = createSVGElement('g', { class: 'wires' });
+  domRefs.domRefs.svg.appendChild(wiresG);
 
-  const nodesG = document.createElementNS(SVGNS, 'g');
-  nodesG.setAttribute('class', 'nodes');
-  svg.appendChild(nodesG);
+  const nodesG = createSVGElement('g', { class: 'nodes' });
+  domRefs.domRefs.svg.appendChild(nodesG);
 
   // Render services
   state.services.forEach(srv => {
     const eps = state.endpoints.filter(e => e.service_ref === srv.id);
-    const headerH = 36;
-    const rowH = 32;
-    const totalH = headerH + eps.length * rowH + 10;
+    const headerH = CONFIG.SERVICE_HEADER_HEIGHT;
+    const rowH = CONFIG.ENDPOINT_ROW_HEIGHT;
+    const totalH = headerH + eps.length * rowH + CONFIG.ENDPOINT_PADDING;
+    
     srv._h = totalH;
     srv._rowH = rowH;
     srv._headerH = headerH;
 
-    const g = document.createElementNS(SVGNS, 'g');
-    g.setAttribute('transform', `translate(${srv.gui.x}, ${srv.gui.y})`);
-    g.setAttribute('class', 'service' + (selection.type === 'service' && selection.id === srv.id ? ' selected' : ''));
-    g.dataset.svcId = srv.id;
+    const g = createSVGElement('g', {
+      transform: `translate(${srv.gui.x}, ${srv.gui.y})`,
+      class: getServiceClass(srv),
+      'data-svc-id': srv.id
+    });
 
     // body rect
-    const rect = document.createElementNS(SVGNS, 'rect');
-    rect.setAttribute('width', srv.gui.width);
-    rect.setAttribute('height', totalH);
-    rect.setAttribute('rx', 10);
-    rect.setAttribute('class', 'service-rect');
+    const rect = createSVGElement('rect', {
+      width: srv.gui.width,
+      height: totalH,
+      rx: 10,
+      class: 'service-rect'
+    });
     g.appendChild(rect);
 
     // header (drag target)
-    const header = document.createElementNS(SVGNS, 'rect');
-    header.setAttribute('width', srv.gui.width);
-    header.setAttribute('height', headerH);
-    header.setAttribute('rx', 10);
-    header.setAttribute('class', 'service-header');
-    header.dataset.dragService = srv.id;
+    const header = createSVGElement('rect', {
+      width: srv.gui.width,
+      height: headerH,
+      rx: 10,
+      class: 'service-header',
+      'data-drag-service': srv.id
+    });
     g.appendChild(header);
 
     // service name
-    const name = document.createElementNS(SVGNS, 'text');
-    name.setAttribute('x', 14);
-    name.setAttribute('y', 23);
-    name.setAttribute('class', 'service-name');
-    name.textContent = srv.name;
+    const name = createSVGElement('text', {
+      x: 14,
+      y: 23,
+      class: 'service-name',
+      textContent: srv.name
+    });
     g.appendChild(name);
 
     // service id
-    const sid = document.createElementNS(SVGNS, 'text');
-    sid.setAttribute('x', srv.gui.width - 14);
-    sid.setAttribute('y', 23);
-    sid.setAttribute('text-anchor', 'end');
-    sid.setAttribute('class', 'service-id');
-    sid.textContent = srv.id;
+    const sid = createSVGElement('text', {
+      x: srv.gui.width - 14,
+      y: 23,
+      'text-anchor': 'end',
+      class: 'service-id',
+      textContent: srv.id
+    });
     g.appendChild(sid);
 
     // divider line
-    const divider = document.createElementNS(SVGNS, 'line');
-    divider.setAttribute('x1', 0);
-    divider.setAttribute('y1', headerH);
-    divider.setAttribute('x2', srv.gui.width);
-    divider.setAttribute('y2', headerH);
-    divider.setAttribute('stroke', 'var(--border)');
-    divider.setAttribute('stroke-width', 1);
+    const divider = createSVGElement('line', {
+      x1: 0,
+      y1: headerH,
+      x2: srv.gui.width,
+      y2: headerH,
+      stroke: 'var(--border)',
+      'stroke-width': 1
+    });
     g.appendChild(divider);
 
     // endpoints
     eps.forEach((ep, i) => {
       const y = headerH + i * rowH;
-      const epG = document.createElementNS(SVGNS, 'g');
-      epG.setAttribute('transform', `translate(0, ${y})`);
-      epG.setAttribute('class', 'endpoint');
-      epG.dataset.epId = ep.id;
-      epG.dataset.class = ep.$class;
-
-      const epRect = document.createElementNS(SVGNS, 'rect');
-      epRect.setAttribute('x', 8);
-      epRect.setAttribute('y', 3);
-      epRect.setAttribute('width', srv.gui.width - 16);
-      epRect.setAttribute('height', rowH - 6);
-      epRect.setAttribute('rx', 5);
-      epRect.setAttribute('class', `ep-rect ep-${ep.$class}`);
-      epG.appendChild(epRect);
-
-      // method/class badge
-      let badge = '';
-      if (ep.$class === 'RestEndpoint') badge = ep.method;
-      else if (ep.$class === 'GrpcEndpoint') badge = 'gRPC';
-      else if (ep.$class === 'PubSubChannel') badge = 'PUB';
-      const badgeText = document.createElementNS(SVGNS, 'text');
-      badgeText.setAttribute('x', 20);
-      badgeText.setAttribute('y', rowH / 2 + 4);
-      badgeText.setAttribute('class', 'ep-method');
-      badgeText.textContent = badge;
-      epG.appendChild(badgeText);
-
-      // path/name
-      const epName = document.createElementNS(SVGNS, 'text');
-      epName.setAttribute('x', 60);
-      epName.setAttribute('y', rowH / 2 + 4);
-      epName.setAttribute('class', 'ep-name');
-      const label = ep.path || ep.topic_name || ep.rpc_method || ep.name;
-      epName.textContent = label.length > 26 ? label.slice(0, 25) + '…' : label;
-      epG.appendChild(epName);
-
-      // connector circle (outbound port on right)
-      const connector = document.createElementNS(SVGNS, 'circle');
-      connector.setAttribute('cx', srv.gui.width - 14);
-      connector.setAttribute('cy', rowH / 2);
-      connector.setAttribute('r', 6);
-      connector.setAttribute('class', 'connector');
-      connector.dataset.epId = ep.id;
-      connector.dataset.serviceId = srv.id;
-      epG.appendChild(connector);
-
+      const epG = createServiceEndpoint(ep, srv, y, rowH);
       g.appendChild(epG);
     });
 
@@ -206,6 +195,74 @@ function renderCanvas() {
   state.connections.forEach(conn => renderWire(conn, wiresG));
 
   updateStats();
+}
+
+function getServiceClass(srv) {
+  let className = 'service';
+  if (selection.type === 'service' && selection.id === srv.id) {
+    className += ' selected';
+  }
+  return className;
+}
+
+function createServiceEndpoint(ep, srv, y, rowH) {
+  const epG = createSVGElement('g', {
+    transform: `translate(0, ${y})`,
+    class: 'endpoint',
+    'data-ep-id': ep.id,
+    'data-class': ep.$class
+  });
+
+  const epRect = createSVGElement('rect', {
+    x: 8,
+    y: 3,
+    width: srv.gui.width - 16,
+    height: rowH - 6,
+    rx: 5,
+    class: `ep-rect ep-${ep.$class}`
+  });
+  epG.appendChild(epRect);
+
+  // method/class badge
+  const badge = getEndpointBadge(ep);
+  const badgeText = createSVGElement('text', {
+    x: 20,
+    y: rowH / 2 + 4,
+    class: 'ep-method',
+    textContent: badge
+  });
+  epG.appendChild(badgeText);
+
+  // path/name
+  const label = getEndpointLabel(ep);
+  const epName = createSVGElement('text', {
+    x: 60,
+    y: rowH / 2 + 4,
+    class: 'ep-name',
+    textContent: truncateLabel(label, CONFIG.MAX_LABEL_LENGTH)
+  });
+  epG.appendChild(epName);
+
+  // connector circle (outbound port on right)
+  const connector = createSVGElement('circle', {
+    cx: srv.gui.width - CONFIG.CONNECTOR_OFFSET_X,
+    cy: rowH / 2,
+    r: CONFIG.CONNECTOR_RADIUS,
+    class: 'connector',
+    'data-ep-id': ep.id,
+    'data-service-id': srv.id
+  });
+  epG.appendChild(connector);
+
+  return epG;
+}
+
+function createSVGElement(tag, attributes) {
+  const element = document.createElementNS(SVGNS, tag);
+  for (const [key, value] of Object.entries(attributes)) {
+    element.setAttribute(key, value);
+  }
+  return element;
 }
 
 /* ---------- RENDER: ONE WIRE ---------- */
@@ -225,7 +282,7 @@ function renderWire(conn, group) {
   if (tgtSrv && targetEp) {
     const eps = state.endpoints.filter(e => e.service_ref === tgtSrv.id);
     const idx = eps.indexOf(targetEp);
-    tx = tgtSrv.gui.x + tgtSrv.gui.width - 14;
+    tx = tgtSrv.gui.x + tgtSrv.gui.width - CONFIG.CONNECTOR_OFFSET_X;
     ty = tgtSrv.gui.y + tgtSrv._headerH + idx * tgtSrv._rowH + tgtSrv._rowH / 2;
   } else if (conn.gui.free_target_pos) {
     tx = conn.gui.free_target_pos.x;
@@ -236,30 +293,36 @@ function renderWire(conn, group) {
   }
 
   const isSelected = selection.type === 'connection' && selection.id === conn.id;
-  const dx = Math.max(60, Math.abs(tx - sx) * 0.5);
+  const dx = Math.max(CONFIG.MIN_CURVE_DX, Math.abs(tx - sx) * 0.5);
 
   // path
-  const path = document.createElementNS(SVGNS, 'path');
-  path.setAttribute('d', `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`);
-  const cls = ['wire'];
-  if (conn.contract_mode === 'override') cls.push('override');
-  if (isSelected) cls.push('selected');
-  path.setAttribute('class', cls.join(' '));
+  const path = createSVGElement('path', {
+    d: `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`,
+    class: getWireClass(conn, isSelected),
+    'data-conn-id': conn.id
+  });
   path.style.stroke = getWireColor(conn, targetEp);
-  path.dataset.connId = conn.id;
   group.appendChild(path);
 
   // free badge
   if (free) {
-    const dot = document.createElementNS(SVGNS, 'circle');
-    dot.setAttribute('cx', tx);
-    dot.setAttribute('cy', ty);
-    dot.setAttribute('r', 6);
-    dot.setAttribute('class', 'wire-end free');
-    dot.dataset.connId = conn.id;
-    dot.dataset.end = 'target';
+    const dot = createSVGElement('circle', {
+      cx: tx,
+      cy: ty,
+      r: CONFIG.CONNECTOR_RADIUS,
+      class: 'wire-end free',
+      'data-conn-id': conn.id,
+      'data-end': 'target'
+    });
     group.appendChild(dot);
   }
+}
+
+function getWireClass(conn, isSelected) {
+  const classes = ['wire'];
+  if (conn.contract_mode === 'override') classes.push('override');
+  if (isSelected) classes.push('selected');
+  return classes.join(' ');
 }
 
 function getWireColor(conn, ep) {
@@ -275,7 +338,7 @@ function renderSidebar() {
   document.getElementById('svc-count').textContent = state.services.length;
   document.getElementById('contract-count').textContent = state.contracts.length;
 
-  svcList.innerHTML = state.services.map(s =>
+  domRefs.domRefs.svcList.innerHTML = state.services.map(s =>
     `<div class="svc-list-item${selection.type==='service'&&selection.id===s.id?' selected':''}" data-svc-id="${s.id}">
       <span class="svc-dot"></span>
       <span>${s.name}</span>
@@ -283,7 +346,7 @@ function renderSidebar() {
     </div>`
   ).join('');
 
-  contractList.innerHTML = state.contracts.map(c =>
+  domRefs.contractList.innerHTML = state.contracts.map(c =>
     `<div class="contract-item" data-contract="${c.id}">
       <div class="contract-id">${c.id}</div>
       <div class="contract-fields">
@@ -313,7 +376,7 @@ function renderJSON() {
     connections: state.connections
   };
   const json = JSON.stringify(clean, null, 2);
-  jsonView.innerHTML = syntaxHighlight(json);
+  domRefs.domRefs.jsonView.innerHTML = syntaxHighlight(json);
 }
 
 function syntaxHighlight(json) {
@@ -332,7 +395,7 @@ function renderInspector() {
     const s = state.services.find(x => x.id === selection.id);
     if (!s) return;
     const eps = state.endpoints.filter(e => e.service_ref === s.id);
-    inspector.innerHTML = `
+    domRefs.inspector.innerHTML = `
       <div class="form-row">
         <label class="form-label">Имя сервиса</label>
         <input class="form-input" value="${s.name}" data-field="name">
@@ -344,7 +407,7 @@ function renderInspector() {
       <div class="form-row">
         <label class="form-label">Эндпоинты (${eps.length})</label>
         <div style="display:flex;flex-wrap:wrap;gap:5px;">
-          ${eps.map(e => `<span class="field-chip" style="background:var(--panel-2);border:1px solid var(--border-2);padding:3px 8px;">${e.path || e.topic_name || e.rpc_method}</span>`).join('') || '<span style="color:var(--muted);font-size:11px;">нет</span>'}
+          ${eps.map(e => `<span class="field-chip" style="background:var(--panel-2);border:1px solid var(--border-2);padding:3px 8px;">${getEndpointLabel(e)}</span>`).join('') || '<span style="color:var(--muted);font-size:11px;">нет</span>'}
         </div>
       </div>
       <div class="form-row">
@@ -360,7 +423,7 @@ function renderInspector() {
     const c = state.connections.find(x => x.id === selection.id);
     if (!c) return;
     const isOverride = c.contract_mode === 'override';
-    inspector.innerHTML = `
+    domRefs.inspector.innerHTML = `
       <div class="form-row">
         <label class="form-label">Название сценария</label>
         <input class="form-input" value="${c.name}" data-conn-field="name">
@@ -409,14 +472,14 @@ function renderInspector() {
       <button class="form-input" style="background:rgba(248,81,73,0.1);border-color:var(--danger);color:var(--danger);cursor:pointer;font-weight:600;" onclick="deleteConnection('${c.id}')">Удалить связь явно</button>
     `;
     // bind controls
-    inspector.querySelectorAll('[data-conn-field]').forEach(el => {
+    domRefs.inspector.querySelectorAll('[data-conn-field]').forEach(el => {
       el.addEventListener('change', () => {
         const f = el.dataset.connField;
         c[f] = el.type === 'number' ? +el.value : el.value;
         renderAll();
       });
     });
-    inspector.querySelectorAll('.contract-mode button').forEach(b => {
+    domRefs.inspector.querySelectorAll('.contract-mode button').forEach(b => {
       b.addEventListener('click', () => {
         c.contract_mode = b.dataset.mode;
         if (c.contract_mode === 'override' && !c.response) {
@@ -427,7 +490,7 @@ function renderInspector() {
     });
   }
   else {
-    inspector.innerHTML = `<div style="color:var(--muted); font-size:12px; text-align:center; padding:20px 0;">
+    domRefs.inspector.innerHTML = `<div style="color:var(--muted); font-size:12px; text-align:center; padding:20px 0;">
       Выберите сервис или связь
     </div>`;
   }
@@ -485,7 +548,7 @@ function renderAll() {
    INTERACTION: DRAG SERVICES
    ============================================================ */
 let dragSvc = null;
-svg.addEventListener('mousedown', (e) => {
+domRefs.svg.addEventListener('mousedown', (e) => {
   const target = e.target;
 
   // service header drag
@@ -608,7 +671,7 @@ document.getElementById('btn-locked').addEventListener('click', () => {
 /* ============================================================
    SIDEBAR CLICKS
    ============================================================ */
-svcList.addEventListener('click', (e) => {
+domRefs.svcList.addEventListener('click', (e) => {
   const item = e.target.closest('[data-svc-id]');
   if (!item) return;
   selection = { type: 'service', id: item.dataset.svcId };
