@@ -13,7 +13,8 @@ const CONFIG = {
   CONNECTOR_OFFSET_X: 14,
   MIN_CURVE_DX: 60,
   MAX_LABEL_LENGTH: 26,
-  GRID_SIZE: 24
+  GRID_SIZE: 24,
+  DRAG_THRESHOLD_PX: 4
 };
 
 /* ---------- STATE ---------- */
@@ -25,7 +26,6 @@ const state = {
     gui_viewport: { zoom: 1, x: 0, y: 0 }
   },
 
-  // Модели данных (contracts), на которые ссылаются эндпоинты
   contracts: [
     { id: "LoginRequest",  fields: { email: "string", password: "string" } },
     { id: "AuthToken",     fields: { token: "string", expires_at: "datetime" } },
@@ -35,7 +35,6 @@ const state = {
     { id: "PaymentResult", fields: { transaction_id: "string", status: "enum[OK,DECLINED]" } }
   ],
 
-  // Интерфейсы сервисов (endpoints)
   endpoints: [
     {
       $class: "RestEndpoint", id: "ep_login", name: "Вход в систему",
@@ -72,7 +71,6 @@ const state = {
     }
   ],
 
-  // Микросервисы и их положение на холсте
   services: [
     { id: "srv_gateway",      name: "API Gateway",          endpoint_refs: [], gui: { x: 40,   y: 180, width: 240 } },
     { id: "srv_auth",         name: "Auth Service",         endpoint_refs: [], gui: { x: 40,   y: 440, width: 240 } },
@@ -82,7 +80,6 @@ const state = {
     { id: "srv_notification", name: "Notification Service", endpoint_refs: [], gui: { x: 1120, y: 440, width: 260 } }
   ],
 
-  // Связи между сервисами (interactions)
   connections: [
     {
       $class: "SyncRequestResponse", id: "conn_login",
@@ -236,14 +233,25 @@ function renderCanvas() {
       x: 14, y: 23, class: 'service-name', textContent: srv.name
     }));
 
+    // Идентификатор сервиса — сдвинут влево, чтобы освободить место под коннектор
     g.appendChild(createSVGElement('text', {
-      x: srv.gui.width - 14, y: 23, 'text-anchor': 'end',
+      x: srv.gui.width - 22, y: 23, 'text-anchor': 'end',
       class: 'service-id', textContent: srv.id
     }));
 
     g.appendChild(createSVGElement('line', {
       x1: 0, y1: headerH, x2: srv.gui.width, y2: headerH,
       stroke: 'var(--border)', 'stroke-width': 1
+    }));
+
+    // === SOURCE CONNECTOR в шапке сервиса (правый край header'а) ===
+    g.appendChild(createSVGElement('circle', {
+      cx: srv.gui.width,
+      cy: headerH / 2,
+      r: CONFIG.CONNECTOR_RADIUS,
+      class: 'source-connector',
+      'data-svc-id': srv.id,
+      'data-source-connector': 'true'
     }));
 
     eps.forEach((ep, i) => {
@@ -859,15 +867,28 @@ function findConnectorAt(clientX, clientY) {
 }
 
 /* ============================================================
-   INTERACTION: SELECT + DRAG SERVICES + DRAG WIRE ENDS
+   INTERACTION: SELECT + DRAG SERVICES + DRAG WIRE ENDS + SOURCE PLUG
    ============================================================ */
-let dragSvc = null;
-let dragWireEnd = null;
+let dragSvc = null;             // { srv, offsetX, offsetY }
+let dragWireEnd = null;         // { conn, offsetX, offsetY }
+let pendingSourceDrag = null;   // { svcId, startX, startY } — ожидает движения мыши
 
 domRefs.svg.addEventListener('mousedown', (e) => {
   const target = e.target;
 
-  // 0. ПРИОРИТЕТ: перетаскивание свободного конца нити (wire-end)
+  // 0. SOURCE CONNECTOR (шапка сервиса) — потенциальное создание новой связи.
+  //    Не создаём сразу: ждём движения мыши за порог DRAG_THRESHOLD_PX.
+  if (target.classList.contains('source-connector')) {
+    pendingSourceDrag = {
+      svcId: target.dataset.svcId,
+      startX: e.clientX,
+      startY: e.clientY
+    };
+    e.preventDefault();
+    return;
+  }
+
+  // 1. Свободный конец нити (wire-end) — тащим существующую связь
   if (target.classList.contains('wire-end') && target.classList.contains('free')) {
     const conn = state.connections.find(c => c.id === target.dataset.connId);
     if (!conn) return;
@@ -884,17 +905,13 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     conn.endpoint_ref = null;
     conn.gui.free_target_pos = { x: curX, y: curY };
 
-    dragWireEnd = {
-      conn,
-      offsetX: mx - curX,
-      offsetY: my - curY
-    };
+    dragWireEnd = { conn, offsetX: mx - curX, offsetY: my - curY };
     e.preventDefault();
     renderAll();
     return;
   }
 
-  // 1. Шапка сервиса — выделяем и стартуем drag
+  // 2. Шапка сервиса — выделяем и начинаем drag
   if (target.dataset.dragService) {
     const srv = state.services.find(s => s.id === target.dataset.dragService);
     if (!srv) return;
@@ -912,7 +929,7 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 2. Тело нити — выделяем связь
+  // 3. Тело нити — выделяем связь
   if (target.dataset.connId) {
     selection = { type: 'connection', id: target.dataset.connId };
     renderAll();
@@ -920,7 +937,7 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 3. Эндпоинт — выделяем эндпоинт
+  // 4. Эндпоинт — выделяем эндпоинт
   const epG = target.closest('.endpoint');
   if (epG) {
     selection = { type: 'endpoint', id: epG.dataset.epId };
@@ -928,7 +945,7 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 4. Тело сервиса — выделяем сервис
+  // 5. Тело сервиса — выделяем сервис
   const svcG = target.closest('.service');
   if (svcG) {
     selection = { type: 'service', id: svcG.dataset.svcId };
@@ -936,12 +953,48 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 5. Пустое место — сброс
+  // 6. Пустое место — сброс
   selection = { type: null, id: null };
   renderAll();
 });
 
 document.addEventListener('mousemove', (e) => {
+  // --- Pending source drag: проверяем порог, создаём связь, переходим в dragWireEnd ---
+  if (pendingSourceDrag) {
+    const dx = Math.abs(e.clientX - pendingSourceDrag.startX);
+    const dy = Math.abs(e.clientY - pendingSourceDrag.startY);
+    if (dx < CONFIG.DRAG_THRESHOLD_PX && dy < CONFIG.DRAG_THRESHOLD_PX) return;
+
+    const srv = state.services.find(s => s.id === pendingSourceDrag.svcId);
+    if (srv) {
+      const id = 'conn_new_' + Date.now().toString(36).slice(-4);
+      const svgRect = domRefs.svg.getBoundingClientRect();
+      const mx = e.clientX - svgRect.left;
+      const my = e.clientY - svgRect.top;
+
+      const newConn = {
+        $class: 'SyncRequestResponse',
+        id,
+        name: 'Новая связь',
+        source_ref: srv.id,
+        target_ref: null,
+        endpoint_ref: null,
+        contract_mode: 'strict',
+        timeout_ms: 1000,
+        retry_policy: { max_attempts: 1, backoff_factor: 1.0 },
+        gui: { free_target_pos: { x: mx, y: my } }
+      };
+      state.connections.push(newConn);
+      selection = { type: 'connection', id };
+      dragWireEnd = { conn: newConn, offsetX: 0, offsetY: 0 };
+      pendingSourceDrag = null;
+      renderAll();
+    } else {
+      pendingSourceDrag = null;
+    }
+    // Проваливаемся в блок dragWireEnd ниже — он отработает на этом же кадре.
+  }
+
   // --- Wire-end drag ---
   if (dragWireEnd) {
     const svgRect = domRefs.svg.getBoundingClientRect();
@@ -971,6 +1024,12 @@ document.addEventListener('mousemove', (e) => {
 });
 
 document.addEventListener('mouseup', (e) => {
+  // --- Pending source drag: клик без движения — ничего не делаем ---
+  if (pendingSourceDrag) {
+    pendingSourceDrag = null;
+    return;
+  }
+
   // --- Wire-end drop ---
   if (dragWireEnd) {
     const conn = dragWireEnd.conn;
