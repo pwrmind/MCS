@@ -19,49 +19,115 @@ const CONFIG = {
 /* ---------- STATE ---------- */
 const state = {
   mcs_version: "3.0",
-  system_name: "CoreRetailPlatform",
+  system_name: "OnlineShop",
   metadata: {
     mode: "draft",
     gui_viewport: { zoom: 1, x: 0, y: 0 }
   },
+
+  // Модели данных (contracts), на которые ссылаются эндпоинты
   contracts: [
-    { id: "contract_user_base",   fields: { id: "uuid", email: "string" } },
-    { id: "contract_user_legacy", fields: { id: "uuid", email: "string", legacy_token: "string" } },
-    { id: "contract_order",       fields: { order_id: "uuid", total: "decimal" } },
-    { id: "contract_payment_ok",  fields: { transaction_id: "string", timestamp: "datetime" } }
+    { id: "LoginRequest",  fields: { email: "string", password: "string" } },
+    { id: "AuthToken",     fields: { token: "string", expires_at: "datetime" } },
+    { id: "ProductList",   fields: { items: "Product[]", total: "integer" } },
+    { id: "OrderRequest",  fields: { user_id: "uuid", items: "array", total: "decimal" } },
+    { id: "OrderCreated",  fields: { order_id: "uuid", user_id: "uuid", total: "decimal" } },
+    { id: "PaymentResult", fields: { transaction_id: "string", status: "enum[OK,DECLINED]" } }
   ],
+
+  // Интерфейсы сервисов (endpoints)
   endpoints: [
-    { $class: "RestEndpoint",  id: "ep_get_user_v1",  name: "Получить пользователя", service_ref: "srv_user_management",
-      path: "/v1/users/{id}", method: "GET", response: { status: 200, body_ref: "contract_user_base" } },
-    { $class: "RestEndpoint",  id: "ep_create_order", name: "Создать заказ", service_ref: "srv_order",
-      path: "/v1/orders", method: "POST", response: { status: 201, body_ref: "contract_order" } },
-    { $class: "GrpcEndpoint",  id: "ep_charge",       name: "Списать средства", service_ref: "srv_payment",
-      package: "retail.payment.v1", service_name: "PaymentService", rpc_method: "Charge",
-      response: { body_ref: "contract_payment_ok" } },
-    { $class: "PubSubChannel", id: "ch_order_events", name: "События заказов", service_ref: "srv_order",
-      topic_name: "orders.v1.events", broker_type: "kafka", message_schema_ref: "contract_order" }
+    {
+      $class: "RestEndpoint", id: "ep_login", name: "Вход в систему",
+      service_ref: "srv_auth",
+      path: "/v1/auth/login", method: "POST",
+      response: { status: 200, body_ref: "AuthToken" }
+    },
+    {
+      $class: "RestEndpoint", id: "ep_products", name: "Каталог товаров",
+      service_ref: "srv_catalog",
+      path: "/v1/products", method: "GET",
+      response: { status: 200, body_ref: "ProductList" }
+    },
+    {
+      $class: "RestEndpoint", id: "ep_checkout", name: "Оформить заказ",
+      service_ref: "srv_order",
+      path: "/v1/orders", method: "POST",
+      response: { status: 201, body_ref: "OrderCreated" }
+    },
+    {
+      $class: "GrpcEndpoint", id: "ep_charge", name: "Списать оплату",
+      service_ref: "srv_payment",
+      package: "shop.payment.v1",
+      service_name: "PaymentService",
+      rpc_method: "Charge",
+      response: { body_ref: "PaymentResult" }
+    },
+    {
+      $class: "PubSubChannel", id: "ch_order_created", name: "События о заказах",
+      service_ref: "srv_notification",
+      topic_name: "orders.v1.created",
+      broker_type: "kafka",
+      message_schema_ref: "OrderCreated"
+    }
   ],
+
+  // Микросервисы и их положение на холсте
   services: [
-    { id: "srv_auth",            name: "Auth Service",       endpoint_refs: [], gui: { x: 40,  y: 60,  width: 230 } },
-    { id: "srv_user_management", name: "User Management",    endpoint_refs: [], gui: { x: 380, y: 60,  width: 280 } },
-    { id: "srv_order",           name: "Order Service",      endpoint_refs: [], gui: { x: 380, y: 300, width: 280 } },
-    { id: "srv_payment",         name: "Payment Gateway",    endpoint_refs: [], gui: { x: 760, y: 200, width: 280 } },
-    { id: "srv_legacy_billing",  name: "Legacy Billing",     endpoint_refs: [], gui: { x: 40,  y: 340, width: 230 } }
+    { id: "srv_gateway",      name: "API Gateway",          endpoint_refs: [], gui: { x: 40,   y: 180, width: 240 } },
+    { id: "srv_auth",         name: "Auth Service",         endpoint_refs: [], gui: { x: 40,   y: 440, width: 240 } },
+    { id: "srv_catalog",      name: "Catalog Service",      endpoint_refs: [], gui: { x: 400,  y: 60,  width: 240 } },
+    { id: "srv_order",        name: "Order Service",        endpoint_refs: [], gui: { x: 760,  y: 220, width: 260 } },
+    { id: "srv_payment",      name: "Payment Service",      endpoint_refs: [], gui: { x: 1120, y: 80,  width: 260 } },
+    { id: "srv_notification", name: "Notification Service", endpoint_refs: [], gui: { x: 1120, y: 440, width: 260 } }
   ],
+
+  // Связи между сервисами (interactions)
   connections: [
-    { $class: "SyncRequestResponse", id: "conn_auth_to_users",    name: "Стандартный запрос профиля",
-      source_ref: "srv_auth",           target_ref: "srv_user_management", endpoint_ref: "ep_get_user_v1",
-      contract_mode: "strict",   timeout_ms: 1500, retry_policy: { max_attempts: 3, backoff_factor: 2.0 }, gui: {} },
-    { $class: "SyncRequestResponse", id: "conn_billing_legacy",   name: "Легаси запрос авторизации",
-      source_ref: "srv_legacy_billing", target_ref: "srv_user_management", endpoint_ref: "ep_get_user_v1",
-      contract_mode: "override", timeout_ms: 3000, retry_policy: { max_attempts: 1, backoff_factor: 1.0 },
-      response: { status: 200, body_ref: "contract_user_legacy" }, gui: {} },
-    { $class: "SyncRequestResponse", id: "conn_order_to_payment", name: "Оплата заказа",
-      source_ref: "srv_order",          target_ref: "srv_payment",         endpoint_ref: "ep_charge",
-      contract_mode: "strict",   timeout_ms: 5000, retry_policy: { max_attempts: 2, backoff_factor: 1.5 }, gui: {} },
-    { $class: "AsyncFireAndForget",  id: "conn_order_events",     name: "Публикация событий",
-      source_ref: "srv_order",          target_ref: "srv_order",           endpoint_ref: "ch_order_events",
-      contract_mode: "strict",   delivery_guarantee: "at_least_once", gui: {} }
+    {
+      $class: "SyncRequestResponse", id: "conn_login",
+      name: "Вход пользователя",
+      source_ref: "srv_gateway", target_ref: "srv_auth", endpoint_ref: "ep_login",
+      contract_mode: "strict",
+      timeout_ms: 1000,
+      retry_policy: { max_attempts: 1, backoff_factor: 1.0 },
+      gui: {}
+    },
+    {
+      $class: "SyncRequestResponse", id: "conn_catalog",
+      name: "Просмотр каталога",
+      source_ref: "srv_gateway", target_ref: "srv_catalog", endpoint_ref: "ep_products",
+      contract_mode: "strict",
+      timeout_ms: 2000,
+      retry_policy: { max_attempts: 3, backoff_factor: 1.5 },
+      gui: {}
+    },
+    {
+      $class: "SyncRequestResponse", id: "conn_checkout",
+      name: "Оформление заказа",
+      source_ref: "srv_gateway", target_ref: "srv_order", endpoint_ref: "ep_checkout",
+      contract_mode: "strict",
+      timeout_ms: 5000,
+      retry_policy: { max_attempts: 2, backoff_factor: 2.0 },
+      gui: {}
+    },
+    {
+      $class: "SyncRequestResponse", id: "conn_payment",
+      name: "Списание средств",
+      source_ref: "srv_order", target_ref: "srv_payment", endpoint_ref: "ep_charge",
+      contract_mode: "strict",
+      timeout_ms: 10000,
+      retry_policy: { max_attempts: 3, backoff_factor: 2.0 },
+      gui: {}
+    },
+    {
+      $class: "AsyncFireAndForget", id: "conn_notify",
+      name: "Уведомление о заказе",
+      source_ref: "srv_order", target_ref: "srv_notification", endpoint_ref: "ch_order_created",
+      contract_mode: "strict",
+      delivery_guarantee: "at_least_once",
+      gui: {}
+    }
   ]
 };
 
@@ -277,7 +343,6 @@ function renderWire(conn, group) {
       class: 'wire-end free' + (isDraggingEnd ? ' dragging' : ''),
       'data-conn-id': conn.id, 'data-end': 'target'
     });
-    // Пока тащим — не перехватывать hit-test, чтобы elementsFromPoint видел коннектор под ним
     if (isDraggingEnd) circle.style.pointerEvents = 'none';
     group.appendChild(circle);
   }
@@ -785,11 +850,6 @@ function renderAll() {
    INTERACTION: HIT-TEST HELPERS
    ============================================================ */
 
-/**
- * Находит коннектор эндпоинта под точкой экрана.
- * elementsFromPoint возвращает все элементы в z-порядке сверху вниз,
- * включая те, что перекрыты другими (например, wire-end в момент drag).
- */
 function findConnectorAt(clientX, clientY) {
   const stack = document.elementsFromPoint(clientX, clientY);
   for (const el of stack) {
@@ -802,7 +862,7 @@ function findConnectorAt(clientX, clientY) {
    INTERACTION: SELECT + DRAG SERVICES + DRAG WIRE ENDS
    ============================================================ */
 let dragSvc = null;
-let dragWireEnd = null;  // { conn, offsetX, offsetY }
+let dragWireEnd = null;
 
 domRefs.svg.addEventListener('mousedown', (e) => {
   const target = e.target;
@@ -820,7 +880,6 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     const curX = conn.gui.free_target_pos?.x ?? mx;
     const curY = conn.gui.free_target_pos?.y ?? my;
 
-    // Полностью отцепляем: связь переходит в свободное состояние
     conn.target_ref = null;
     conn.endpoint_ref = null;
     conn.gui.free_target_pos = { x: curX, y: curY };
@@ -896,7 +955,6 @@ document.addEventListener('mousemove', (e) => {
 
     renderCanvas();
 
-    // Подсветка коннектора под курсором (после рендера, чтобы не затереть)
     const hovered = findConnectorAt(e.clientX, e.clientY);
     if (hovered) hovered.classList.add('target-hover');
     return;
@@ -928,8 +986,6 @@ document.addEventListener('mouseup', (e) => {
         delete conn.gui.free_target_pos;
       }
     }
-    // Если никуда не попали — связь остаётся свободной,
-    // free_target_pos уже актуален из mousemove.
 
     dragWireEnd = null;
     renderAll();
@@ -969,19 +1025,19 @@ document.querySelectorAll('[data-add]').forEach(el => {
         newEp = {
           $class: 'RestEndpoint', id: 'ep_new_rest_' + (newEndpointCounter++), name: 'New Endpoint',
           service_ref: srvId, path: '/v1/new',
-          method: 'GET', response: { status: 200, body_ref: 'contract_user_base' }
+          method: 'GET', response: { status: 200, body_ref: 'AuthToken' }
         };
       } else if (type === 'grpc') {
         newEp = {
           $class: 'GrpcEndpoint', id: 'ep_new_grpc_' + (newEndpointCounter++), name: 'New RPC',
           service_ref: srvId, package: 'pkg.v1', service_name: 'Svc', rpc_method: 'Call',
-          response: { body_ref: 'contract_payment_ok' }
+          response: { body_ref: 'PaymentResult' }
         };
       } else {
         newEp = {
           $class: 'PubSubChannel', id: 'ch_new_' + (newEndpointCounter++), name: 'New Topic',
           service_ref: srvId, topic_name: 'new.events.v1',
-          broker_type: 'kafka', message_schema_ref: 'contract_order'
+          broker_type: 'kafka', message_schema_ref: 'OrderCreated'
         };
       }
       state.endpoints.push(newEp);
