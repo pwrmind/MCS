@@ -107,8 +107,6 @@ function getConnectionBadge(conn) {
   if (conn.$class === 'StreamingInteraction') return { text: 'STREAM', cls: 'stream' };
   return { text: 'CONN', cls: 'sync' };
 }
-
-/* Set nested property by dotted path: setNested(obj, "response.body_ref", v) */
 function setNested(obj, path, value) {
   const parts = path.split('.');
   let cur = obj;
@@ -262,6 +260,7 @@ function renderWire(conn, group) {
   }
 
   const isSelected = selection.type === 'connection' && selection.id === conn.id;
+  const isDraggingEnd = dragWireEnd && dragWireEnd.conn.id === conn.id;
   const dx = Math.max(CONFIG.MIN_CURVE_DX, Math.abs(tx - sx) * 0.5);
 
   const path = createSVGElement('path', {
@@ -273,10 +272,14 @@ function renderWire(conn, group) {
   group.appendChild(path);
 
   if (free) {
-    group.appendChild(createSVGElement('circle', {
-      cx: tx, cy: ty, r: CONFIG.CONNECTOR_RADIUS, class: 'wire-end free',
+    const circle = createSVGElement('circle', {
+      cx: tx, cy: ty, r: CONFIG.CONNECTOR_RADIUS,
+      class: 'wire-end free' + (isDraggingEnd ? ' dragging' : ''),
       'data-conn-id': conn.id, 'data-end': 'target'
-    }));
+    });
+    // Пока тащим — не перехватывать hit-test, чтобы elementsFromPoint видел коннектор под ним
+    if (isDraggingEnd) circle.style.pointerEvents = 'none';
+    group.appendChild(circle);
   }
 }
 
@@ -410,7 +413,6 @@ function renderInspector() {
   }
 }
 
-/* ---------- Service Inspector ---------- */
 function renderServiceInspector() {
   const s = state.services.find(x => x.id === selection.id);
   if (!s) return;
@@ -444,7 +446,6 @@ function renderServiceInspector() {
     <button class="form-input" style="background:rgba(248,81,73,0.1);border-color:var(--danger);color:var(--danger);cursor:pointer;font-weight:600;" onclick="deleteService('${s.id}')">Удалить сервис</button>
   `;
 
-  // Bind editable fields
   domRefs.inspector.querySelectorAll('[data-svc-field]').forEach(el => {
     el.addEventListener('change', () => {
       const f = el.dataset.svcField;
@@ -457,7 +458,6 @@ function renderServiceInspector() {
         if (v === s.id) return;
         const oldId = s.id;
         s.id = v;
-        // Cascade rename into endpoints and connections
         state.endpoints.forEach(e => { if (e.service_ref === oldId) e.service_ref = v; });
         state.connections.forEach(c => {
           if (c.source_ref === oldId) c.source_ref = v;
@@ -469,7 +469,6 @@ function renderServiceInspector() {
     });
   });
 
-  // Shortcut: click chip → inspect endpoint
   domRefs.inspector.querySelectorAll('[data-inspect-ep]').forEach(el => {
     el.addEventListener('click', () => {
       selection = { type: 'endpoint', id: el.dataset.inspectEp };
@@ -478,12 +477,10 @@ function renderServiceInspector() {
   });
 }
 
-/* ---------- Endpoint Inspector ---------- */
 function renderEndpointInspector() {
   const ep = state.endpoints.find(x => x.id === selection.id);
   if (!ep) return;
 
-  // Class-specific editable fields
   let classFields = '';
   if (ep.$class === 'RestEndpoint') {
     classFields = `
@@ -531,7 +528,6 @@ function renderEndpointInspector() {
     `;
   }
 
-  // Contract binding (response for RPC/REST, message_schema for Pub/Sub)
   let contractHtml = '';
   if (ep.$class === 'PubSubChannel') {
     contractHtml = `
@@ -592,7 +588,6 @@ function renderEndpointInspector() {
     <button class="form-input" style="background:rgba(248,81,73,0.1);border-color:var(--danger);color:var(--danger);cursor:pointer;font-weight:600;" onclick="deleteEndpoint('${ep.id}')">Удалить эндпоинт</button>
   `;
 
-  // Bind editable fields
   domRefs.inspector.querySelectorAll('[data-ep-field]').forEach(el => {
     el.addEventListener('change', () => {
       const f = el.dataset.epField;
@@ -600,7 +595,6 @@ function renderEndpointInspector() {
       if (v === '') v = null;
       if (el.type === 'number' && v !== null) v = +v;
 
-      // Special-case: rename ID with cascade
       if (f === 'id') {
         if (!v || v === ep.id) { renderAll(); return; }
         const oldId = ep.id;
@@ -617,7 +611,6 @@ function renderEndpointInspector() {
   });
 }
 
-/* ---------- Connection Inspector ---------- */
 function renderConnectionInspector() {
   const c = state.connections.find(x => x.id === selection.id);
   if (!c) return;
@@ -789,12 +782,58 @@ function renderAll() {
 }
 
 /* ============================================================
-   INTERACTION: SELECT + DRAG SERVICES
+   INTERACTION: HIT-TEST HELPERS
+   ============================================================ */
+
+/**
+ * Находит коннектор эндпоинта под точкой экрана.
+ * elementsFromPoint возвращает все элементы в z-порядке сверху вниз,
+ * включая те, что перекрыты другими (например, wire-end в момент drag).
+ */
+function findConnectorAt(clientX, clientY) {
+  const stack = document.elementsFromPoint(clientX, clientY);
+  for (const el of stack) {
+    if (el.classList && el.classList.contains('connector')) return el;
+  }
+  return null;
+}
+
+/* ============================================================
+   INTERACTION: SELECT + DRAG SERVICES + DRAG WIRE ENDS
    ============================================================ */
 let dragSvc = null;
+let dragWireEnd = null;  // { conn, offsetX, offsetY }
 
 domRefs.svg.addEventListener('mousedown', (e) => {
   const target = e.target;
+
+  // 0. ПРИОРИТЕТ: перетаскивание свободного конца нити (wire-end)
+  if (target.classList.contains('wire-end') && target.classList.contains('free')) {
+    const conn = state.connections.find(c => c.id === target.dataset.connId);
+    if (!conn) return;
+
+    selection = { type: 'connection', id: conn.id };
+
+    const svgRect = domRefs.svg.getBoundingClientRect();
+    const mx = e.clientX - svgRect.left;
+    const my = e.clientY - svgRect.top;
+    const curX = conn.gui.free_target_pos?.x ?? mx;
+    const curY = conn.gui.free_target_pos?.y ?? my;
+
+    // Полностью отцепляем: связь переходит в свободное состояние
+    conn.target_ref = null;
+    conn.endpoint_ref = null;
+    conn.gui.free_target_pos = { x: curX, y: curY };
+
+    dragWireEnd = {
+      conn,
+      offsetX: mx - curX,
+      offsetY: my - curY
+    };
+    e.preventDefault();
+    renderAll();
+    return;
+  }
 
   // 1. Шапка сервиса — выделяем и стартуем drag
   if (target.dataset.dragService) {
@@ -814,7 +853,7 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 2. Нить — выделяем связь
+  // 2. Тело нити — выделяем связь
   if (target.dataset.connId) {
     selection = { type: 'connection', id: target.dataset.connId };
     renderAll();
@@ -822,7 +861,7 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 3. Эндпоинт (или его коннектор) — выделяем эндпоинт
+  // 3. Эндпоинт — выделяем эндпоинт
   const epG = target.closest('.endpoint');
   if (epG) {
     selection = { type: 'endpoint', id: epG.dataset.epId };
@@ -830,7 +869,7 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 4. Тело сервиса (не эндпоинт) — выделяем сервис
+  // 4. Тело сервиса — выделяем сервис
   const svcG = target.closest('.service');
   if (svcG) {
     selection = { type: 'service', id: svcG.dataset.svcId };
@@ -838,21 +877,66 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 5. Пустое место — сброс выделения
+  // 5. Пустое место — сброс
   selection = { type: null, id: null };
   renderAll();
 });
 
 document.addEventListener('mousemove', (e) => {
-  if (!dragSvc) return;
-  const svgRect = domRefs.svg.getBoundingClientRect();
-  dragSvc.srv.gui.x = Math.max(0, e.clientX - svgRect.left - dragSvc.offsetX);
-  dragSvc.srv.gui.y = Math.max(0, e.clientY - svgRect.top  - dragSvc.offsetY);
-  renderCanvas();
-  renderJSON();
+  // --- Wire-end drag ---
+  if (dragWireEnd) {
+    const svgRect = domRefs.svg.getBoundingClientRect();
+    const mx = e.clientX - svgRect.left;
+    const my = e.clientY - svgRect.top;
+
+    dragWireEnd.conn.gui.free_target_pos = {
+      x: mx - dragWireEnd.offsetX,
+      y: my - dragWireEnd.offsetY
+    };
+
+    renderCanvas();
+
+    // Подсветка коннектора под курсором (после рендера, чтобы не затереть)
+    const hovered = findConnectorAt(e.clientX, e.clientY);
+    if (hovered) hovered.classList.add('target-hover');
+    return;
+  }
+
+  // --- Service drag ---
+  if (dragSvc) {
+    const svgRect = domRefs.svg.getBoundingClientRect();
+    dragSvc.srv.gui.x = Math.max(0, e.clientX - svgRect.left - dragSvc.offsetX);
+    dragSvc.srv.gui.y = Math.max(0, e.clientY - svgRect.top  - dragSvc.offsetY);
+    renderCanvas();
+    renderJSON();
+  }
 });
 
-document.addEventListener('mouseup', () => {
+document.addEventListener('mouseup', (e) => {
+  // --- Wire-end drop ---
+  if (dragWireEnd) {
+    const conn = dragWireEnd.conn;
+    const hovered = findConnectorAt(e.clientX, e.clientY);
+
+    if (hovered) {
+      const epId  = hovered.dataset.epId;
+      const svcId = hovered.dataset.serviceId;
+      const ep = state.endpoints.find(x => x.id === epId);
+      if (ep && svcId) {
+        conn.target_ref = svcId;
+        conn.endpoint_ref = epId;
+        delete conn.gui.free_target_pos;
+      }
+    }
+    // Если никуда не попали — связь остаётся свободной,
+    // free_target_pos уже актуален из mousemove.
+
+    dragWireEnd = null;
+    renderAll();
+    return;
+  }
+
+  // --- Service drop ---
   dragSvc = null;
 });
 
