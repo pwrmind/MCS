@@ -101,7 +101,7 @@ function getEndpointBadge(ep) {
   return '';
 }
 
-/* ---------- SVG HELPER (BUGFIX #2: textContent как свойство) ---------- */
+/* ---------- SVG HELPER (textContent как свойство, не атрибут) ---------- */
 function createSVGElement(tag, attributes) {
   const element = document.createElementNS(SVGNS, tag);
   for (const [key, value] of Object.entries(attributes)) {
@@ -114,7 +114,7 @@ function createSVGElement(tag, attributes) {
   return element;
 }
 
-/* ---------- RENDER: CANVAS (BUGFIX #1: domRefs.svg) ---------- */
+/* ---------- RENDER: CANVAS ---------- */
 function renderCanvas() {
   reindex();
   domRefs.svg.innerHTML = '';
@@ -272,7 +272,7 @@ function getWireColor(conn, ep) {
   return 'var(--accent)';
 }
 
-/* ---------- SIDEBAR (BUGFIX #1: domRefs.svcList) ---------- */
+/* ---------- SIDEBAR ---------- */
 function renderSidebar() {
   document.getElementById('svc-count').textContent = state.services.length;
   document.getElementById('contract-count').textContent = state.contracts.length;
@@ -295,7 +295,7 @@ function renderSidebar() {
   ).join('');
 }
 
-/* ---------- JSON VIEW (BUGFIX #1: domRefs.jsonView) ---------- */
+/* ---------- JSON VIEW ---------- */
 function renderJSON() {
   const clean = {
     mcs_version: state.mcs_version,
@@ -482,24 +482,33 @@ function renderAll() {
 }
 
 /* ============================================================
-   INTERACTION: DRAG SERVICES
+   INTERACTION: SELECT + DRAG SERVICES
    ============================================================ */
 let dragSvc = null;
+
 domRefs.svg.addEventListener('mousedown', (e) => {
   const target = e.target;
 
+  // 1. Клик по шапке сервиса: сначала ВЫДЕЛЯЕМ, затем начинаем drag.
+  //    srv — ссылка на объект в state, поэтому перерисовка не рвёт drag.
   if (target.dataset.dragService) {
     const srv = state.services.find(s => s.id === target.dataset.dragService);
     if (!srv) return;
+
+    selection = { type: 'service', id: srv.id };
+    renderAll();
+
+    const svgRect = domRefs.svg.getBoundingClientRect();
     dragSvc = {
       srv,
-      offsetX: e.clientX - srv.gui.x,
-      offsetY: e.clientY - srv.gui.y
+      offsetX: e.clientX - svgRect.left - srv.gui.x,
+      offsetY: e.clientY - svgRect.top  - srv.gui.y
     };
     e.preventDefault();
     return;
   }
 
+  // 2. Клик по нити — выделяем связь
   if (target.dataset.connId) {
     selection = { type: 'connection', id: target.dataset.connId };
     renderAll();
@@ -507,6 +516,7 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
+  // 3. Клик по телу сервиса (не по эндпоинту) — выделяем сервис
   const svcG = target.closest('.service');
   if (svcG && !target.closest('.endpoint')) {
     selection = { type: 'service', id: svcG.dataset.svcId };
@@ -514,17 +524,18 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
+  // 4. Клик по пустому месту — снимаем выделение
   selection = { type: null, id: null };
   renderAll();
 });
 
 document.addEventListener('mousemove', (e) => {
-  if (dragSvc) {
-    dragSvc.srv.gui.x = Math.max(0, e.clientX - dragSvc.offsetX);
-    dragSvc.srv.gui.y = Math.max(0, e.clientY - dragSvc.offsetY);
-    renderCanvas();
-    renderJSON();
-  }
+  if (!dragSvc) return;
+  const svgRect = domRefs.svg.getBoundingClientRect();
+  dragSvc.srv.gui.x = Math.max(0, e.clientX - svgRect.left - dragSvc.offsetX);
+  dragSvc.srv.gui.y = Math.max(0, e.clientY - svgRect.top  - dragSvc.offsetY);
+  renderCanvas();
+  renderJSON();
 });
 
 document.addEventListener('mouseup', () => {
