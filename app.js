@@ -5,7 +5,6 @@
 
 const SVGNS = 'http://www.w3.org/2000/svg';
 
-// Configuration constants
 const CONFIG = {
   SERVICE_HEADER_HEIGHT: 36,
   ENDPOINT_ROW_HEIGHT: 32,
@@ -88,15 +87,13 @@ const domRefs = {
   contractList: document.getElementById('contract-list')
 };
 
-/* ---------- HELPER FUNCTIONS ---------- */
+/* ---------- HELPERS ---------- */
 function truncateLabel(text, maxLength) {
   return text.length > maxLength ? text.slice(0, maxLength - 1) + '…' : text;
 }
-
 function getEndpointLabel(ep) {
   return ep.path || ep.topic_name || ep.rpc_method || ep.name;
 }
-
 function getEndpointBadge(ep) {
   if (ep.$class === 'RestEndpoint') return ep.method;
   if (ep.$class === 'GrpcEndpoint') return 'gRPC';
@@ -104,24 +101,36 @@ function getEndpointBadge(ep) {
   return '';
 }
 
-/* ---------- RENDER: SERVICES & ENDPOINTS ---------- */
+/* ---------- SVG HELPER (BUGFIX #2: textContent как свойство) ---------- */
+function createSVGElement(tag, attributes) {
+  const element = document.createElementNS(SVGNS, tag);
+  for (const [key, value] of Object.entries(attributes)) {
+    if (key === 'textContent') {
+      element.textContent = value;
+    } else {
+      element.setAttribute(key, value);
+    }
+  }
+  return element;
+}
+
+/* ---------- RENDER: CANVAS (BUGFIX #1: domRefs.svg) ---------- */
 function renderCanvas() {
   reindex();
-  domRefs.domRefs.svg.innerHTML = '';
+  domRefs.svg.innerHTML = '';
 
   const wiresG = createSVGElement('g', { class: 'wires' });
-  domRefs.domRefs.svg.appendChild(wiresG);
+  domRefs.svg.appendChild(wiresG);
 
   const nodesG = createSVGElement('g', { class: 'nodes' });
-  domRefs.domRefs.svg.appendChild(nodesG);
+  domRefs.svg.appendChild(nodesG);
 
-  // Render services
   state.services.forEach(srv => {
     const eps = state.endpoints.filter(e => e.service_ref === srv.id);
     const headerH = CONFIG.SERVICE_HEADER_HEIGHT;
     const rowH = CONFIG.ENDPOINT_ROW_HEIGHT;
     const totalH = headerH + eps.length * rowH + CONFIG.ENDPOINT_PADDING;
-    
+
     srv._h = totalH;
     srv._rowH = rowH;
     srv._headerH = headerH;
@@ -132,76 +141,43 @@ function renderCanvas() {
       'data-svc-id': srv.id
     });
 
-    // body rect
-    const rect = createSVGElement('rect', {
-      width: srv.gui.width,
-      height: totalH,
-      rx: 10,
-      class: 'service-rect'
-    });
-    g.appendChild(rect);
+    g.appendChild(createSVGElement('rect', {
+      width: srv.gui.width, height: totalH, rx: 10, class: 'service-rect'
+    }));
 
-    // header (drag target)
-    const header = createSVGElement('rect', {
-      width: srv.gui.width,
-      height: headerH,
-      rx: 10,
-      class: 'service-header',
-      'data-drag-service': srv.id
-    });
-    g.appendChild(header);
+    g.appendChild(createSVGElement('rect', {
+      width: srv.gui.width, height: headerH, rx: 10,
+      class: 'service-header', 'data-drag-service': srv.id
+    }));
 
-    // service name
-    const name = createSVGElement('text', {
-      x: 14,
-      y: 23,
-      class: 'service-name',
-      textContent: srv.name
-    });
-    g.appendChild(name);
+    g.appendChild(createSVGElement('text', {
+      x: 14, y: 23, class: 'service-name', textContent: srv.name
+    }));
 
-    // service id
-    const sid = createSVGElement('text', {
-      x: srv.gui.width - 14,
-      y: 23,
-      'text-anchor': 'end',
-      class: 'service-id',
-      textContent: srv.id
-    });
-    g.appendChild(sid);
+    g.appendChild(createSVGElement('text', {
+      x: srv.gui.width - 14, y: 23, 'text-anchor': 'end',
+      class: 'service-id', textContent: srv.id
+    }));
 
-    // divider line
-    const divider = createSVGElement('line', {
-      x1: 0,
-      y1: headerH,
-      x2: srv.gui.width,
-      y2: headerH,
-      stroke: 'var(--border)',
-      'stroke-width': 1
-    });
-    g.appendChild(divider);
+    g.appendChild(createSVGElement('line', {
+      x1: 0, y1: headerH, x2: srv.gui.width, y2: headerH,
+      stroke: 'var(--border)', 'stroke-width': 1
+    }));
 
-    // endpoints
     eps.forEach((ep, i) => {
-      const y = headerH + i * rowH;
-      const epG = createServiceEndpoint(ep, srv, y, rowH);
-      g.appendChild(epG);
+      g.appendChild(createServiceEndpoint(ep, srv, headerH + i * rowH, rowH));
     });
 
     nodesG.appendChild(g);
   });
 
-  // Render wires (after nodes so we can compute positions)
   state.connections.forEach(conn => renderWire(conn, wiresG));
-
   updateStats();
 }
 
 function getServiceClass(srv) {
   let className = 'service';
-  if (selection.type === 'service' && selection.id === srv.id) {
-    className += ' selected';
-  }
+  if (selection.type === 'service' && selection.id === srv.id) className += ' selected';
   return className;
 }
 
@@ -213,68 +189,38 @@ function createServiceEndpoint(ep, srv, y, rowH) {
     'data-class': ep.$class
   });
 
-  const epRect = createSVGElement('rect', {
-    x: 8,
-    y: 3,
-    width: srv.gui.width - 16,
-    height: rowH - 6,
-    rx: 5,
+  epG.appendChild(createSVGElement('rect', {
+    x: 8, y: 3, width: srv.gui.width - 16, height: rowH - 6, rx: 5,
     class: `ep-rect ep-${ep.$class}`
-  });
-  epG.appendChild(epRect);
+  }));
 
-  // method/class badge
-  const badge = getEndpointBadge(ep);
-  const badgeText = createSVGElement('text', {
-    x: 20,
-    y: rowH / 2 + 4,
-    class: 'ep-method',
-    textContent: badge
-  });
-  epG.appendChild(badgeText);
+  epG.appendChild(createSVGElement('text', {
+    x: 20, y: rowH / 2 + 4, class: 'ep-method',
+    textContent: getEndpointBadge(ep)
+  }));
 
-  // path/name
-  const label = getEndpointLabel(ep);
-  const epName = createSVGElement('text', {
-    x: 60,
-    y: rowH / 2 + 4,
-    class: 'ep-name',
-    textContent: truncateLabel(label, CONFIG.MAX_LABEL_LENGTH)
-  });
-  epG.appendChild(epName);
+  epG.appendChild(createSVGElement('text', {
+    x: 60, y: rowH / 2 + 4, class: 'ep-name',
+    textContent: truncateLabel(getEndpointLabel(ep), CONFIG.MAX_LABEL_LENGTH)
+  }));
 
-  // connector circle (outbound port on right)
-  const connector = createSVGElement('circle', {
+  epG.appendChild(createSVGElement('circle', {
     cx: srv.gui.width - CONFIG.CONNECTOR_OFFSET_X,
-    cy: rowH / 2,
-    r: CONFIG.CONNECTOR_RADIUS,
-    class: 'connector',
-    'data-ep-id': ep.id,
-    'data-service-id': srv.id
-  });
-  epG.appendChild(connector);
+    cy: rowH / 2, r: CONFIG.CONNECTOR_RADIUS, class: 'connector',
+    'data-ep-id': ep.id, 'data-service-id': srv.id
+  }));
 
   return epG;
 }
 
-function createSVGElement(tag, attributes) {
-  const element = document.createElementNS(SVGNS, tag);
-  for (const [key, value] of Object.entries(attributes)) {
-    element.setAttribute(key, value);
-  }
-  return element;
-}
-
-/* ---------- RENDER: ONE WIRE ---------- */
+/* ---------- RENDER: WIRE ---------- */
 function renderWire(conn, group) {
   const src = state.services.find(s => s.id === conn.source_ref);
   if (!src) return;
 
-  // start point: right edge of source service, at header mid
   const sx = src.gui.x + src.gui.width;
   const sy = src.gui.y + src._headerH / 2;
 
-  // end point
   let tx, ty, free = false;
   const tgtSrv = state.services.find(s => s.id === conn.target_ref);
   const targetEp = conn.endpoint_ref ? state.endpoints.find(e => e.id === conn.endpoint_ref) : null;
@@ -295,7 +241,6 @@ function renderWire(conn, group) {
   const isSelected = selection.type === 'connection' && selection.id === conn.id;
   const dx = Math.max(CONFIG.MIN_CURVE_DX, Math.abs(tx - sx) * 0.5);
 
-  // path
   const path = createSVGElement('path', {
     d: `M ${sx} ${sy} C ${sx + dx} ${sy}, ${tx - dx} ${ty}, ${tx} ${ty}`,
     class: getWireClass(conn, isSelected),
@@ -304,17 +249,11 @@ function renderWire(conn, group) {
   path.style.stroke = getWireColor(conn, targetEp);
   group.appendChild(path);
 
-  // free badge
   if (free) {
-    const dot = createSVGElement('circle', {
-      cx: tx,
-      cy: ty,
-      r: CONFIG.CONNECTOR_RADIUS,
-      class: 'wire-end free',
-      'data-conn-id': conn.id,
-      'data-end': 'target'
-    });
-    group.appendChild(dot);
+    group.appendChild(createSVGElement('circle', {
+      cx: tx, cy: ty, r: CONFIG.CONNECTOR_RADIUS, class: 'wire-end free',
+      'data-conn-id': conn.id, 'data-end': 'target'
+    }));
   }
 }
 
@@ -333,12 +272,12 @@ function getWireColor(conn, ep) {
   return 'var(--accent)';
 }
 
-/* ---------- SIDEBAR LISTS ---------- */
+/* ---------- SIDEBAR (BUGFIX #1: domRefs.svcList) ---------- */
 function renderSidebar() {
   document.getElementById('svc-count').textContent = state.services.length;
   document.getElementById('contract-count').textContent = state.contracts.length;
 
-  domRefs.domRefs.svcList.innerHTML = state.services.map(s =>
+  domRefs.svcList.innerHTML = state.services.map(s =>
     `<div class="svc-list-item${selection.type==='service'&&selection.id===s.id?' selected':''}" data-svc-id="${s.id}">
       <span class="svc-dot"></span>
       <span>${s.name}</span>
@@ -356,7 +295,7 @@ function renderSidebar() {
   ).join('');
 }
 
-/* ---------- JSON VIEW ---------- */
+/* ---------- JSON VIEW (BUGFIX #1: domRefs.jsonView) ---------- */
 function renderJSON() {
   const clean = {
     mcs_version: state.mcs_version,
@@ -375,8 +314,7 @@ function renderJSON() {
     })),
     connections: state.connections
   };
-  const json = JSON.stringify(clean, null, 2);
-  domRefs.domRefs.jsonView.innerHTML = syntaxHighlight(json);
+  domRefs.jsonView.innerHTML = syntaxHighlight(JSON.stringify(clean, null, 2));
 }
 
 function syntaxHighlight(json) {
@@ -471,7 +409,6 @@ function renderInspector() {
       </div>` : ''}
       <button class="form-input" style="background:rgba(248,81,73,0.1);border-color:var(--danger);color:var(--danger);cursor:pointer;font-weight:600;" onclick="deleteConnection('${c.id}')">Удалить связь явно</button>
     `;
-    // bind controls
     domRefs.inspector.querySelectorAll('[data-conn-field]').forEach(el => {
       el.addEventListener('change', () => {
         const f = el.dataset.connField;
@@ -551,7 +488,6 @@ let dragSvc = null;
 domRefs.svg.addEventListener('mousedown', (e) => {
   const target = e.target;
 
-  // service header drag
   if (target.dataset.dragService) {
     const srv = state.services.find(s => s.id === target.dataset.dragService);
     if (!srv) return;
@@ -564,7 +500,6 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // connection select
   if (target.dataset.connId) {
     selection = { type: 'connection', id: target.dataset.connId };
     renderAll();
@@ -572,7 +507,6 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // service body click (not on endpoint)
   const svcG = target.closest('.service');
   if (svcG && !target.closest('.endpoint')) {
     selection = { type: 'service', id: svcG.dataset.svcId };
@@ -580,7 +514,6 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // blank click
   selection = { type: null, id: null };
   renderAll();
 });
@@ -599,7 +532,7 @@ document.addEventListener('mouseup', () => {
 });
 
 /* ============================================================
-   INTERACTION: PALETTE — ADD SERVICE / ENDPOINT
+   INTERACTION: PALETTE
    ============================================================ */
 let newEndpointCounter = 1;
 document.querySelectorAll('[data-add]').forEach(el => {
@@ -613,35 +546,26 @@ document.querySelectorAll('[data-add]').forEach(el => {
         gui: { x: 100 + Math.random() * 400, y: 400 + Math.random() * 200, width: 240 }
       });
     } else if (type === 'rest') {
-      // add to currently selected service, or first one
-      const srvId = selection.type === 'service' && selection.id
-        ? selection.id
-        : state.services[0]?.id;
+      const srvId = selection.type === 'service' && selection.id ? selection.id : state.services[0]?.id;
       if (!srvId) return;
-      const id = 'ep_new_rest_' + (newEndpointCounter++);
       state.endpoints.push({
-        $class: 'RestEndpoint', id, name: 'New Endpoint',
+        $class: 'RestEndpoint', id: 'ep_new_rest_' + (newEndpointCounter++), name: 'New Endpoint',
         service_ref: srvId, path: '/v1/new',
         method: 'GET', response: { status: 200, body_ref: 'contract_user_base' }
       });
     } else if (type === 'grpc') {
-      const srvId = selection.type === 'service' && selection.id
-        ? selection.id : state.services[0]?.id;
+      const srvId = selection.type === 'service' && selection.id ? selection.id : state.services[0]?.id;
       if (!srvId) return;
-      const id = 'ep_new_grpc_' + (newEndpointCounter++);
       state.endpoints.push({
-        $class: 'GrpcEndpoint', id, name: 'New RPC',
-        service_ref: srvId, package: 'pkg.v1',
-        service_name: 'Svc', rpc_method: 'Call',
+        $class: 'GrpcEndpoint', id: 'ep_new_grpc_' + (newEndpointCounter++), name: 'New RPC',
+        service_ref: srvId, package: 'pkg.v1', service_name: 'Svc', rpc_method: 'Call',
         response: { body_ref: 'contract_payment_ok' }
       });
     } else if (type === 'kafka') {
-      const srvId = selection.type === 'service' && selection.id
-        ? selection.id : state.services[0]?.id;
+      const srvId = selection.type === 'service' && selection.id ? selection.id : state.services[0]?.id;
       if (!srvId) return;
-      const id = 'ch_new_' + (newEndpointCounter++);
       state.endpoints.push({
-        $class: 'PubSubChannel', id, name: 'New Topic',
+        $class: 'PubSubChannel', id: 'ch_new_' + (newEndpointCounter++), name: 'New Topic',
         service_ref: srvId, topic_name: 'new.events.v1',
         broker_type: 'kafka', message_schema_ref: 'contract_order'
       });
@@ -657,15 +581,13 @@ document.getElementById('btn-draft').addEventListener('click', () => {
   state.metadata.mode = 'draft';
   document.getElementById('btn-draft').classList.add('active');
   document.getElementById('btn-locked').classList.remove('active');
-  updateStats();
-  renderJSON();
+  updateStats(); renderJSON();
 });
 document.getElementById('btn-locked').addEventListener('click', () => {
   state.metadata.mode = 'locked';
   document.getElementById('btn-locked').classList.add('active');
   document.getElementById('btn-draft').classList.remove('active');
-  updateStats();
-  renderJSON();
+  updateStats(); renderJSON();
 });
 
 /* ============================================================
@@ -683,4 +605,3 @@ domRefs.svcList.addEventListener('click', (e) => {
    ============================================================ */
 reindex();
 renderAll();
-
