@@ -1,0 +1,48 @@
+mcs_version: "1.4"
+system_name: "ECommercePlatform"
+
+services:
+  # --- СЕРВИС 1: Работает по классическому REST (Синхронный тип) ---
+  - id: "payment_srv"
+    name: "Payment Gateway"
+    endpoints:
+      - id: "ep_charge_post"
+        type: "http_rest"          # 1. ТИП ЭНДПОИНТА
+        path: "/v1/charges"
+        method: "POST"
+        request:
+          payload:
+            amount: "decimal"
+        response:
+          status: 201
+
+  # --- СЕРВИС 2: Работает с событиями (Асинхронный тип) ---
+  - id: "notification_srv"
+    name: "Notification Service"
+    endpoints:
+      - id: "ep_send_email"
+        type: "event_consumer"     # 2. ТИП ЭНДПОИНТА (Слушатель событий)
+        channel: "orders.v1.events" # Вместо path используем имя топика/очереди
+        broker: "kafka_cluster_prod"
+        message_default:            # Вместо request/response тут просто структура сообщения
+          payload:
+            user_id: "string"
+            template: "string"
+
+# РЕЕСТР СВЯЗЕЙ (Сценарии взаимодействия)
+connections:
+  # Сценарий 1: Синхронное взаимодействие (Request-Response)
+  - id: "order_to_payment"
+    source: "order_srv"
+    target: "payment_srv"
+    endpoint_ref: "ep_charge_post"
+    interaction_type: "sync_request_response" # ТИП ВЗАИМОДЕЙСТВИЯ
+    contract: "default"
+
+  # Сценарий 2: Асинхронное взаимодействие (Event-Driven / Pub-Sub)
+  - id: "order_to_notification"
+    source: "order_srv"
+    target: "notification_srv"
+    endpoint_ref: "ep_send_email"
+    interaction_type: "async_publish"         # ТИП ВЗАИМОДЕЙСТВИЯ
+    contract: "default"
