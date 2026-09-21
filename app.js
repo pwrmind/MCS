@@ -435,14 +435,10 @@ function buildCleanState() {
     system_name: state.system_name,
     metadata: state.metadata,
     contracts: state.contracts,
-    endpoints: state.endpoints.map(e => {
-      const { service_ref, ...rest } = e;
-      return rest;
-    }),
+    endpoints: state.endpoints,     // ← как есть, с service_ref
     services: state.services.map(s => ({
       id: s.id,
       name: s.name,
-      endpoint_refs: getEndpointRefsForService(s.id),
       gui: { x: s.gui.x, y: s.gui.y, width: s.gui.width }
     })),
     connections: state.connections
@@ -1042,6 +1038,19 @@ function loadStateFromObject(parsed) {
   })) : [];
   state.connections = Array.isArray(parsed.connections) ? parsed.connections : [];
   selection = { type: null, id: null };
+
+  // MIGRATION: восстановить service_ref из services[].endpoint_refs
+  // для файлов, сохранённых до исправления buildCleanState().
+  const missing = state.endpoints.filter(ep => !ep.service_ref);
+  if (missing.length > 0 && Array.isArray(parsed.services)) {
+    parsed.services.forEach(s => {
+      const refs = Array.isArray(s.endpoint_refs) ? s.endpoint_refs : [];
+      refs.forEach(epId => {
+        const ep = state.endpoints.find(e => e.id === epId);
+        if (ep && !ep.service_ref) ep.service_ref = s.id;
+      });
+    });
+  }
 }
 
 function tryLoadFromLocalStorage() {
@@ -1730,6 +1739,318 @@ document.getElementById('btn-export')?.addEventListener('click', exportToFile);
 document.getElementById('btn-import')?.addEventListener('click', importFromFile);
 document.getElementById('btn-import-openapi')?.addEventListener('click', importOpenAPI);
 document.getElementById('btn-reset')?.addEventListener('click', resetToDefault);
+
+/* ============================================================
+   GLOBAL SEARCH (Ctrl+F / Cmd+F)
+   Command-palette style.
+   ============================================================ */
+
+const SearchPalette = (() => {
+  let root = null;
+  let inputEl = null;
+  let listEl = null;
+  let counterEl = null;
+  let results = [];
+  let activeIndex = 0;
+  let isOpen = false;
+
+  // ---------- Build flat search index ----------
+  function buildEntries() {
+    const entries = [];
+
+    state.services.forEach(s => {
+      entries.push({
+        type: 'service',
+        id: s.id,
+        primary: s.name,
+        secondary: s.id,
+        badge: 'SRV',
+        badgeClass: 'badge-service',
+        haystack: `${s.name} ${s.id}`.toLowerCase(),
+        scrollTarget: { x: s.gui.x, y: s.gui.y, w: s.gui.width }
+      });
+    });
+
+    state.endpoints.forEach(ep => {
+      const srv = state.services.find(s => s.id === ep.service_ref);
+      const haystack = [
+        ep.id, ep.name, ep.path, ep.topic_name, ep.rpc_method,
+        ep.package, ep.service_name, ep.broker_type,
+        ep.service_ref, ep.message_schema_ref, ep.response?.body_ref
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      entries.push({
+        type: 'endpoint',
+        id: ep.id,
+        primary: getEndpointLabel(ep),
+        secondary: `${ep.id} · ${srv?.name || ep.service_ref || '?'}`,
+        badge: getEndpointBadge(ep) || 'EP',
+        badgeClass: 'badge-endpoint',
+        haystack,
+        scrollTarget: srv ? { x: srv.gui.x, y: srv.gui.y, w: srv.gui.width } : null
+      });
+    });
+
+    state.connections.forEach(c => {
+      const badge = getConnectionBadge(c);
+      const haystack = [
+        c.id, c.name, c.source_ref, c.target_ref, c.endpoint_ref, c.$class
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      const src = state.services.find(s => s.id === c.source_ref);
+      entries.push({
+        type: 'connection',
+        id: c.id,
+        primary: c.name,
+        secondary: `${c.source_ref || '?'} → ${c.target_ref || '?'}`,
+        badge: badge.text,
+        badgeClass: 'badge-' + badge.cls,
+        haystack,
+        scrollTarget: src ? { x: src.gui.x, y: src.gui.y, w: src.gui.width } : null
+      });
+    });
+
+    state.contracts.forEach(ct => {
+      const fieldNames = Object.keys(ct.fields);
+      const haystack = [ct.id, ...fieldNames].join(' ').toLowerCase();
+
+      entries.push({
+        type: 'contract',
+        id: ct.id,
+        primary: ct.id,
+        secondary: `${fieldNames.length} field${fieldNames.length === 1 ? '' : 's'}`,
+        badge: 'CTR',
+        badgeClass: 'badge-contract',
+        haystack,
+        scrollTarget: null
+      });
+    });
+
+    return entries;
+  }
+
+  // ---------- Scoring ----------
+  function scoreEntry(query, entry) {
+    const q = query.toLowerCase();
+    const primary = entry.primary.toLowerCase();
+    const id = entry.id.toLowerCase();
+
+    if (id === q) return 1000;
+    if (primary === q) return 900;
+    if (primary.startsWith(q)) return 800;
+    if (id.startsWith(q)) return 700;
+    if (primary.includes(q)) return 500;
+    if (id.includes(q)) return 400;
+    if (entry.haystack.includes(q)) return 100;
+    if (isSubsequence(q, entry.haystack)) return 10;
+    return -1;
+  }
+
+  function isSubsequence(needle, haystack) {
+    let i = 0;
+    for (let j = 0; j < haystack.length && i < needle.length; j++) {
+      if (haystack[j] === needle[i]) i++;
+    }
+    return i === needle.length;
+  }
+
+  function search(query) {
+    const entries = buildEntries();
+    if (!query) return entries.slice(0, 60);
+
+    return entries
+      .map(e => ({ entry: e, score: scoreEntry(query, e) }))
+      .filter(x => x.score > 0)
+      .sort((a, b) => b.score - a.score ||
+        a.entry.primary.localeCompare(b.entry.primary))
+      .slice(0, 60)
+      .map(x => x.entry);
+  }
+
+  // ---------- Highlight ----------
+  function highlight(text, query) {
+    if (!query) return escapeHtml(text);
+    const idx = text.toLowerCase().indexOf(query.toLowerCase());
+    if (idx === -1) return escapeHtml(text);
+    return (
+      escapeHtml(text.slice(0, idx)) +
+      '<mark>' + escapeHtml(text.slice(idx, idx + query.length)) + '</mark>' +
+      escapeHtml(text.slice(idx + query.length))
+    );
+  }
+
+  // ---------- Render ----------
+  function renderList() {
+    if (!listEl) return;
+
+    if (results.length === 0) {
+      listEl.innerHTML = '<div class="search-empty">Ничего не найдено</div>';
+      counterEl.textContent = '0';
+      return;
+    }
+    counterEl.textContent = results.length;
+
+    const q = inputEl.value;
+    listEl.innerHTML = results.map((r, i) => `
+      <div class="search-item${i === activeIndex ? ' active' : ''}" data-index="${i}">
+        <span class="search-badge ${r.badgeClass}">${escapeHtml(r.badge)}</span>
+        <div class="search-text">
+          <div class="search-primary">${highlight(r.primary, q)}</div>
+          <div class="search-secondary">${escapeHtml(r.secondary)}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  // ---------- Lifecycle ----------
+  function ensureRoot() {
+    if (root) return;
+
+    root = document.createElement('div');
+    root.className = 'search-overlay';
+    root.innerHTML = `
+      <div class="search-palette">
+        <div class="search-header">
+          <span class="search-icon">⌕</span>
+          <input class="search-input" type="text"
+                 placeholder="Поиск: сервисы, эндпоинты, связи, контракты…"
+                 autocomplete="off" spellcheck="false">
+          <span class="search-counter">0</span>
+        </div>
+        <div class="search-list"></div>
+        <div class="search-footer">
+          <span><kbd>↑</kbd><kbd>↓</kbd> навигация</span>
+          <span><kbd>Enter</kbd> открыть</span>
+          <span><kbd>Esc</kbd> закрыть</span>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(root);
+
+    inputEl = root.querySelector('.search-input');
+    listEl = root.querySelector('.search-list');
+    counterEl = root.querySelector('.search-counter');
+
+    inputEl.addEventListener('input', () => {
+      results = search(inputEl.value);
+      activeIndex = 0;
+      renderList();
+    });
+
+    inputEl.addEventListener('keydown', onInputKeydown);
+
+    listEl.addEventListener('click', (e) => {
+      const item = e.target.closest('[data-index]');
+      if (!item) return;
+      const idx = +item.dataset.index;
+      if (!isNaN(idx) && results[idx]) navigate(results[idx]);
+    });
+
+    listEl.addEventListener('mousemove', (e) => {
+      const item = e.target.closest('[data-index]');
+      if (!item) return;
+      const idx = +item.dataset.index;
+      if (idx !== activeIndex) {
+        activeIndex = idx;
+        updateActive();
+      }
+    });
+
+    root.addEventListener('mousedown', (e) => {
+      if (e.target === root) close();
+    });
+  }
+
+  function onInputKeydown(e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (results.length === 0) return;
+      activeIndex = Math.min(activeIndex + 1, results.length - 1);
+      updateActive();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (results.length === 0) return;
+      activeIndex = Math.max(activeIndex - 1, 0);
+      updateActive();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (results[activeIndex]) navigate(results[activeIndex]);
+    }
+  }
+
+  function updateActive() {
+    listEl.querySelectorAll('.search-item').forEach((el, i) => {
+      el.classList.toggle('active', i === activeIndex);
+    });
+    const a = listEl.querySelector('.search-item.active');
+    if (a) a.scrollIntoView({ block: 'nearest' });
+  }
+
+  // ---------- Navigation ----------
+  function navigate(entry) {
+    selection = { type: entry.type, id: entry.id };
+    renderAll();
+    if (entry.scrollTarget) scrollCanvasTo(entry.scrollTarget);
+    close();
+  }
+
+  function scrollCanvasTo(target) {
+    const wrap = domRefs.canvasWrap;
+    if (!wrap) return;
+    const centerX = target.x + (target.w || 240) / 2;
+    const targetLeft = centerX - wrap.clientWidth / 2;
+    const targetTop  = target.y - wrap.clientHeight / 3;
+    wrap.scrollTo({
+      left: Math.max(0, targetLeft),
+      top:  Math.max(0, targetTop),
+      behavior: 'smooth'
+    });
+  }
+
+  // ---------- Public ----------
+  function open() {
+    ensureRoot();
+    isOpen = true;
+    root.classList.add('open');
+    inputEl.value = '';
+    results = search('');
+    activeIndex = 0;
+    renderList();
+    requestAnimationFrame(() => inputEl.focus());
+  }
+
+  function close() {
+    if (!root) return;
+    isOpen = false;
+    root.classList.remove('open');
+    if (inputEl) inputEl.blur();
+  }
+
+  function toggle() {
+    isOpen ? close() : open();
+  }
+
+  return { open, close, toggle, isOpen: () => isOpen };
+})();
+
+/* ---------- Global keyboard hook ---------- */
+window.addEventListener('keydown', (e) => {
+  const isFind = (e.ctrlKey || e.metaKey) &&
+                 !e.shiftKey && !e.altKey &&
+                 (e.key.toLowerCase() === 'f' || e.key.toLowerCase() === 'а');
+  if (!isFind) return;
+
+  // Не перехватываем внутри textarea и contenteditable —
+  // там Ctrl+F может быть осмысленным поиском по тексту поля
+  const ae = document.activeElement;
+  if (ae && (ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
+
+  e.preventDefault();
+  SearchPalette.toggle();
+});
 
 /* ============================================================
    BOOT
