@@ -4,6 +4,7 @@
    ============================================================ */
 
 const SVGNS = 'http://www.w3.org/2000/svg';
+const STORAGE_KEY = 'mcs.architecture.v1';
 
 const CONFIG = {
   SERVICE_HEADER_HEIGHT: 36,
@@ -14,128 +15,83 @@ const CONFIG = {
   MIN_CURVE_DX: 60,
   MAX_LABEL_LENGTH: 26,
   GRID_SIZE: 24,
-  DRAG_THRESHOLD_PX: 4
+  DRAG_THRESHOLD_PX: 4,
+  AUTOSAVE_DELAY_MS: 500
 };
+
+/* ---------- DEFAULT STATE (используется как fallback при загрузке) ---------- */
+function createDefaultState() {
+  return {
+    mcs_version: "3.0",
+    system_name: "OnlineShop",
+    metadata: {
+      mode: "draft",
+      gui_viewport: { zoom: 1, x: 0, y: 0 }
+    },
+    contracts: [
+      { id: "LoginRequest",  fields: { email: "string", password: "string" } },
+      { id: "AuthToken",     fields: { token: "string", expires_at: "datetime" } },
+      { id: "ProductList",   fields: { items: "Product[]", total: "integer" } },
+      { id: "OrderRequest",  fields: { user_id: "uuid", items: "array", total: "decimal" } },
+      { id: "OrderCreated",  fields: { order_id: "uuid", user_id: "uuid", total: "decimal" } },
+      { id: "PaymentResult", fields: { transaction_id: "string", status: "enum[OK,DECLINED]" } }
+    ],
+    endpoints: [
+      { $class: "RestEndpoint", id: "ep_login", name: "Вход в систему",
+        service_ref: "srv_auth",
+        path: "/v1/auth/login", method: "POST",
+        response: { status: 200, body_ref: "AuthToken" } },
+      { $class: "RestEndpoint", id: "ep_products", name: "Каталог товаров",
+        service_ref: "srv_catalog",
+        path: "/v1/products", method: "GET",
+        response: { status: 200, body_ref: "ProductList" } },
+      { $class: "RestEndpoint", id: "ep_checkout", name: "Оформить заказ",
+        service_ref: "srv_order",
+        path: "/v1/orders", method: "POST",
+        response: { status: 201, body_ref: "OrderCreated" } },
+      { $class: "GrpcEndpoint", id: "ep_charge", name: "Списать оплату",
+        service_ref: "srv_payment",
+        package: "shop.payment.v1", service_name: "PaymentService", rpc_method: "Charge",
+        response: { body_ref: "PaymentResult" } },
+      { $class: "PubSubChannel", id: "ch_order_created", name: "События о заказах",
+        service_ref: "srv_notification",
+        topic_name: "orders.v1.created", broker_type: "kafka",
+        message_schema_ref: "OrderCreated" }
+    ],
+    services: [
+      { id: "srv_gateway",      name: "API Gateway",           gui: { x: 40,   y: 180, width: 240 } },
+      { id: "srv_auth",         name: "Auth Service",          gui: { x: 40,   y: 440, width: 240 } },
+      { id: "srv_catalog",      name: "Catalog Service",       gui: { x: 400,  y: 60,  width: 240 } },
+      { id: "srv_order",        name: "Order Service",         gui: { x: 760,  y: 220, width: 260 } },
+      { id: "srv_payment",      name: "Payment Service",       gui: { x: 1120, y: 80,  width: 260 } },
+      { id: "srv_notification", name: "Notification Service",  gui: { x: 1120, y: 440, width: 260 } }
+    ],
+    connections: [
+      { $class: "SyncRequestResponse", id: "conn_login", name: "Вход пользователя",
+        source_ref: "srv_gateway", target_ref: "srv_auth", endpoint_ref: "ep_login",
+        contract_mode: "strict", timeout_ms: 1000,
+        retry_policy: { max_attempts: 1, backoff_factor: 1.0 }, gui: {} },
+      { $class: "SyncRequestResponse", id: "conn_catalog", name: "Просмотр каталога",
+        source_ref: "srv_gateway", target_ref: "srv_catalog", endpoint_ref: "ep_products",
+        contract_mode: "strict", timeout_ms: 2000,
+        retry_policy: { max_attempts: 3, backoff_factor: 1.5 }, gui: {} },
+      { $class: "SyncRequestResponse", id: "conn_checkout", name: "Оформление заказа",
+        source_ref: "srv_gateway", target_ref: "srv_order", endpoint_ref: "ep_checkout",
+        contract_mode: "strict", timeout_ms: 5000,
+        retry_policy: { max_attempts: 2, backoff_factor: 2.0 }, gui: {} },
+      { $class: "SyncRequestResponse", id: "conn_payment", name: "Списание средств",
+        source_ref: "srv_order", target_ref: "srv_payment", endpoint_ref: "ep_charge",
+        contract_mode: "strict", timeout_ms: 10000,
+        retry_policy: { max_attempts: 3, backoff_factor: 2.0 }, gui: {} },
+      { $class: "AsyncFireAndForget", id: "conn_notify", name: "Уведомление о заказе",
+        source_ref: "srv_order", target_ref: "srv_notification", endpoint_ref: "ch_order_created",
+        contract_mode: "strict", delivery_guarantee: "at_least_once", gui: {} }
+    ]
+  };
+}
 
 /* ---------- STATE ---------- */
-const state = {
-  mcs_version: "3.0",
-  system_name: "OnlineShop",
-  metadata: {
-    mode: "draft",
-    gui_viewport: { zoom: 1, x: 0, y: 0 }
-  },
-
-  contracts: [
-    { id: "LoginRequest",  fields: { email: "string", password: "string" } },
-    { id: "AuthToken",     fields: { token: "string", expires_at: "datetime" } },
-    { id: "ProductList",   fields: { items: "Product[]", total: "integer" } },
-    { id: "OrderRequest",  fields: { user_id: "uuid", items: "array", total: "decimal" } },
-    { id: "OrderCreated",  fields: { order_id: "uuid", user_id: "uuid", total: "decimal" } },
-    { id: "PaymentResult", fields: { transaction_id: "string", status: "enum[OK,DECLINED]" } }
-  ],
-
-  endpoints: [
-    {
-      $class: "RestEndpoint", id: "ep_login", name: "Вход в систему",
-      service_ref: "srv_auth",
-      path: "/v1/auth/login", method: "POST",
-      response: { status: 200, body_ref: "AuthToken" }
-    },
-    {
-      $class: "RestEndpoint", id: "ep_products", name: "Каталог товаров",
-      service_ref: "srv_catalog",
-      path: "/v1/products", method: "GET",
-      response: { status: 200, body_ref: "ProductList" }
-    },
-    {
-      $class: "RestEndpoint", id: "ep_checkout", name: "Оформить заказ",
-      service_ref: "srv_order",
-      path: "/v1/orders", method: "POST",
-      response: { status: 201, body_ref: "OrderCreated" }
-    },
-    {
-      $class: "GrpcEndpoint", id: "ep_charge", name: "Списать оплату",
-      service_ref: "srv_payment",
-      package: "shop.payment.v1",
-      service_name: "PaymentService",
-      rpc_method: "Charge",
-      response: { body_ref: "PaymentResult" }
-    },
-    {
-      $class: "PubSubChannel", id: "ch_order_created", name: "События о заказах",
-      service_ref: "srv_notification",
-      topic_name: "orders.v1.created",
-      broker_type: "kafka",
-      message_schema_ref: "OrderCreated"
-    }
-  ],
-
-  services: [
-    { id: "srv_gateway",      name: "API Gateway",          endpoint_refs: [], gui: { x: 40,   y: 180, width: 240 } },
-    { id: "srv_auth",         name: "Auth Service",         endpoint_refs: [], gui: { x: 40,   y: 440, width: 240 } },
-    { id: "srv_catalog",      name: "Catalog Service",      endpoint_refs: [], gui: { x: 400,  y: 60,  width: 240 } },
-    { id: "srv_order",        name: "Order Service",        endpoint_refs: [], gui: { x: 760,  y: 220, width: 260 } },
-    { id: "srv_payment",      name: "Payment Service",      endpoint_refs: [], gui: { x: 1120, y: 80,  width: 260 } },
-    { id: "srv_notification", name: "Notification Service", endpoint_refs: [], gui: { x: 1120, y: 440, width: 260 } }
-  ],
-
-  connections: [
-    {
-      $class: "SyncRequestResponse", id: "conn_login",
-      name: "Вход пользователя",
-      source_ref: "srv_gateway", target_ref: "srv_auth", endpoint_ref: "ep_login",
-      contract_mode: "strict",
-      timeout_ms: 1000,
-      retry_policy: { max_attempts: 1, backoff_factor: 1.0 },
-      gui: {}
-    },
-    {
-      $class: "SyncRequestResponse", id: "conn_catalog",
-      name: "Просмотр каталога",
-      source_ref: "srv_gateway", target_ref: "srv_catalog", endpoint_ref: "ep_products",
-      contract_mode: "strict",
-      timeout_ms: 2000,
-      retry_policy: { max_attempts: 3, backoff_factor: 1.5 },
-      gui: {}
-    },
-    {
-      $class: "SyncRequestResponse", id: "conn_checkout",
-      name: "Оформление заказа",
-      source_ref: "srv_gateway", target_ref: "srv_order", endpoint_ref: "ep_checkout",
-      contract_mode: "strict",
-      timeout_ms: 5000,
-      retry_policy: { max_attempts: 2, backoff_factor: 2.0 },
-      gui: {}
-    },
-    {
-      $class: "SyncRequestResponse", id: "conn_payment",
-      name: "Списание средств",
-      source_ref: "srv_order", target_ref: "srv_payment", endpoint_ref: "ep_charge",
-      contract_mode: "strict",
-      timeout_ms: 10000,
-      retry_policy: { max_attempts: 3, backoff_factor: 2.0 },
-      gui: {}
-    },
-    {
-      $class: "AsyncFireAndForget", id: "conn_notify",
-      name: "Уведомление о заказе",
-      source_ref: "srv_order", target_ref: "srv_notification", endpoint_ref: "ch_order_created",
-      contract_mode: "strict",
-      delivery_guarantee: "at_least_once",
-      gui: {}
-    }
-  ]
-};
-
-/* ---------- INDEX SERVICE ENDPOINTS ---------- */
-function reindex() {
-  state.services.forEach(s => s.endpoint_refs = []);
-  state.endpoints.forEach(ep => {
-    const srv = state.services.find(s => s.id === ep.service_ref);
-    if (srv) srv.endpoint_refs.push(ep.id);
-  });
-}
+let state = createDefaultState();
 
 /* ---------- SELECTION ---------- */
 let selection = { type: null, id: null };
@@ -151,7 +107,10 @@ const domRefs = {
   contractList: document.getElementById('contract-list')
 };
 
-/* ---------- HELPERS ---------- */
+/* ============================================================
+   HELPERS
+   ============================================================ */
+
 function truncateLabel(text, maxLength) {
   return text.length > maxLength ? text.slice(0, maxLength - 1) + '…' : text;
 }
@@ -180,6 +139,23 @@ function setNested(obj, path, value) {
   cur[parts[parts.length - 1]] = value;
 }
 
+/** Проверка уникальности id в пуле. excludeId — для rename того же объекта. */
+function isIdUnique(pool, id, excludeId) {
+  return !pool.some(x => x.id === id && x.id !== excludeId);
+}
+
+/** Округление до сетки. */
+function snapToGrid(v) {
+  return Math.round(v / CONFIG.GRID_SIZE) * CONFIG.GRID_SIZE;
+}
+
+/** Endpoint_refs вычисляются на лету. */
+function getEndpointRefsForService(srvId) {
+  return state.endpoints
+    .filter(e => e.service_ref === srvId)
+    .map(e => e.id);
+}
+
 /* ---------- SVG HELPER ---------- */
 function createSVGElement(tag, attributes) {
   const element = document.createElementNS(SVGNS, tag);
@@ -193,9 +169,10 @@ function createSVGElement(tag, attributes) {
   return element;
 }
 
-/* ---------- RENDER: CANVAS ---------- */
+/* ============================================================
+   RENDER: CANVAS
+   ============================================================ */
 function renderCanvas() {
-  reindex();
   domRefs.svg.innerHTML = '';
 
   const wiresG = createSVGElement('g', { class: 'wires' });
@@ -233,7 +210,6 @@ function renderCanvas() {
       x: 14, y: 23, class: 'service-name', textContent: srv.name
     }));
 
-    // Идентификатор сервиса — сдвинут влево, чтобы освободить место под коннектор
     g.appendChild(createSVGElement('text', {
       x: srv.gui.width - 22, y: 23, 'text-anchor': 'end',
       class: 'service-id', textContent: srv.id
@@ -244,11 +220,8 @@ function renderCanvas() {
       stroke: 'var(--border)', 'stroke-width': 1
     }));
 
-    // === SOURCE CONNECTOR в шапке сервиса (правый край header'а) ===
     g.appendChild(createSVGElement('circle', {
-      cx: srv.gui.width,
-      cy: headerH / 2,
-      r: CONFIG.CONNECTOR_RADIUS,
+      cx: srv.gui.width, cy: headerH / 2, r: CONFIG.CONNECTOR_RADIUS,
       class: 'source-connector',
       'data-svc-id': srv.id,
       'data-source-connector': 'true'
@@ -380,16 +353,16 @@ function renderSidebar() {
   domRefs.svcList.innerHTML = state.services.map(s =>
     `<div class="svc-list-item${selection.type==='service'&&selection.id===s.id?' selected':''}" data-svc-id="${s.id}">
       <span class="svc-dot"></span>
-      <span>${s.name}</span>
-      <span class="svc-list-id">${s.id}</span>
+      <span>${escapeHtml(s.name)}</span>
+      <span class="svc-list-id">${escapeHtml(s.id)}</span>
     </div>`
   ).join('');
 
   domRefs.contractList.innerHTML = state.contracts.map(c =>
     `<div class="contract-item" data-contract="${c.id}">
-      <div class="contract-id">${c.id}</div>
+      <div class="contract-id">${escapeHtml(c.id)}</div>
       <div class="contract-fields">
-        ${Object.entries(c.fields).map(([k,v]) => `<span class="field-chip">${k}: ${v}</span>`).join('')}
+        ${Object.entries(c.fields).map(([k,v]) => `<span class="field-chip">${escapeHtml(k)}: ${escapeHtml(v)}</span>`).join('')}
       </div>
     </div>`
   ).join('');
@@ -405,11 +378,11 @@ function renderConnectionsList() {
     const modeCls = c.contract_mode === 'override' ? 'override' : 'strict';
 
     const targetHtml = c.target_ref
-      ? `<span class="tgt">${c.target_ref}</span>`
+      ? `<span class="tgt">${escapeHtml(c.target_ref)}</span>`
       : `<span class="free">— повисла —</span>`;
 
     const epHtml = c.endpoint_ref
-      ? `<span class="conn-ep">${c.endpoint_ref}</span>`
+      ? `<span class="conn-ep">${escapeHtml(c.endpoint_ref)}</span>`
       : `<span class="conn-ep free">null</span>`;
 
     const cls = ['conn-list-item', badge.cls];
@@ -420,10 +393,10 @@ function renderConnectionsList() {
       <div class="${cls.join(' ')}" data-conn-id="${c.id}">
         <div class="conn-head">
           <span class="conn-class-badge ${badge.cls}">${badge.text}</span>
-          <span class="conn-name">${c.name}</span>
+          <span class="conn-name">${escapeHtml(c.name)}</span>
         </div>
         <div class="conn-route">
-          <span class="src">${c.source_ref || '—'}</span>
+          <span class="src">${escapeHtml(c.source_ref || '—')}</span>
           <span class="arr">→</span>
           ${targetHtml}
         </div>
@@ -436,9 +409,15 @@ function renderConnectionsList() {
   }).join('');
 }
 
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 /* ---------- JSON VIEW ---------- */
-function renderJSON() {
-  const clean = {
+function buildCleanState() {
+  return {
     mcs_version: state.mcs_version,
     system_name: state.system_name,
     metadata: state.metadata,
@@ -450,12 +429,15 @@ function renderJSON() {
     services: state.services.map(s => ({
       id: s.id,
       name: s.name,
-      endpoint_refs: s.endpoint_refs,
+      endpoint_refs: getEndpointRefsForService(s.id),
       gui: { x: s.gui.x, y: s.gui.y, width: s.gui.width }
     })),
     connections: state.connections
   };
-  domRefs.jsonView.innerHTML = syntaxHighlight(JSON.stringify(clean, null, 2));
+}
+
+function renderJSON() {
+  domRefs.jsonView.innerHTML = syntaxHighlight(JSON.stringify(buildCleanState(), null, 2));
 }
 
 function syntaxHighlight(json) {
@@ -494,11 +476,11 @@ function renderServiceInspector() {
   domRefs.inspector.innerHTML = `
     <div class="form-row">
       <label class="form-label">Имя сервиса</label>
-      <input class="form-input" value="${s.name}" data-svc-field="name">
+      <input class="form-input" value="${escapeHtml(s.name)}" data-svc-field="name">
     </div>
     <div class="form-row">
       <label class="form-label">Идентификатор</label>
-      <input class="form-input mono" value="${s.id}" data-svc-field="id">
+      <input class="form-input mono" value="${escapeHtml(s.id)}" data-svc-field="id">
     </div>
     <div class="form-row">
       <label class="form-label">Эндпоинты (${eps.length})</label>
@@ -506,7 +488,7 @@ function renderServiceInspector() {
         ${eps.map(e => `
           <span class="field-chip" style="background:var(--panel-2);border:1px solid var(--border-2);padding:3px 8px;cursor:pointer;"
                 data-inspect-ep="${e.id}">
-            ${getEndpointLabel(e)}
+            ${escapeHtml(getEndpointLabel(e))}
           </span>`).join('') || '<span style="color:var(--muted);font-size:11px;">нет</span>'}
       </div>
     </div>
@@ -516,7 +498,7 @@ function renderServiceInspector() {
         <span>x: ${s.gui.x}</span><span>y: ${s.gui.y}</span><span>w: ${s.gui.width}</span>
       </div>
     </div>
-    <button class="form-input" style="background:rgba(248,81,73,0.1);border-color:var(--danger);color:var(--danger);cursor:pointer;font-weight:600;" onclick="deleteService('${s.id}')">Удалить сервис</button>
+    <button class="form-input danger-btn" data-action="delete-service" data-id="${escapeHtml(s.id)}">Удалить сервис</button>
   `;
 
   domRefs.inspector.querySelectorAll('[data-svc-field]').forEach(el => {
@@ -529,6 +511,11 @@ function renderServiceInspector() {
         s.name = v;
       } else if (f === 'id') {
         if (v === s.id) return;
+        if (!isIdUnique(state.services, v, s.id)) {
+          alert(`Идентификатор "${v}" уже используется другим сервисом`);
+          renderAll();
+          return;
+        }
         const oldId = s.id;
         s.id = v;
         state.endpoints.forEach(e => { if (e.service_ref === oldId) e.service_ref = v; });
@@ -559,7 +546,7 @@ function renderEndpointInspector() {
     classFields = `
       <div class="form-row">
         <label class="form-label">Path</label>
-        <input class="form-input mono" value="${ep.path || ''}" data-ep-field="path">
+        <input class="form-input mono" value="${escapeHtml(ep.path || '')}" data-ep-field="path">
       </div>
       <div class="form-row">
         <label class="form-label">HTTP Method</label>
@@ -574,22 +561,22 @@ function renderEndpointInspector() {
     classFields = `
       <div class="form-row">
         <label class="form-label">Package</label>
-        <input class="form-input mono" value="${ep.package || ''}" data-ep-field="package">
+        <input class="form-input mono" value="${escapeHtml(ep.package || '')}" data-ep-field="package">
       </div>
       <div class="form-row">
         <label class="form-label">Service Name</label>
-        <input class="form-input mono" value="${ep.service_name || ''}" data-ep-field="service_name">
+        <input class="form-input mono" value="${escapeHtml(ep.service_name || '')}" data-ep-field="service_name">
       </div>
       <div class="form-row">
         <label class="form-label">RPC Method</label>
-        <input class="form-input mono" value="${ep.rpc_method || ''}" data-ep-field="rpc_method">
+        <input class="form-input mono" value="${escapeHtml(ep.rpc_method || '')}" data-ep-field="rpc_method">
       </div>
     `;
   } else if (ep.$class === 'PubSubChannel') {
     classFields = `
       <div class="form-row">
         <label class="form-label">Topic Name</label>
-        <input class="form-input mono" value="${ep.topic_name || ''}" data-ep-field="topic_name">
+        <input class="form-input mono" value="${escapeHtml(ep.topic_name || '')}" data-ep-field="topic_name">
       </div>
       <div class="form-row">
         <label class="form-label">Broker Type</label>
@@ -609,7 +596,7 @@ function renderEndpointInspector() {
         <select class="form-select mono" data-ep-field="message_schema_ref">
           <option value="">— не выбрано —</option>
           ${state.contracts.map(c =>
-            `<option value="${c.id}" ${ep.message_schema_ref === c.id ? 'selected' : ''}>${c.id}</option>`
+            `<option value="${c.id}" ${ep.message_schema_ref === c.id ? 'selected' : ''}>${escapeHtml(c.id)}</option>`
           ).join('')}
         </select>
       </div>
@@ -628,7 +615,7 @@ function renderEndpointInspector() {
         <select class="form-select mono" data-ep-field="response.body_ref">
           <option value="">— не выбрано —</option>
           ${state.contracts.map(c =>
-            `<option value="${c.id}" ${bodyRef === c.id ? 'selected' : ''}>${c.id}</option>`
+            `<option value="${c.id}" ${bodyRef === c.id ? 'selected' : ''}>${escapeHtml(c.id)}</option>`
           ).join('')}
         </select>
       </div>
@@ -636,21 +623,21 @@ function renderEndpointInspector() {
   }
 
   const svcOptions = state.services.map(s =>
-    `<option value="${s.id}" ${ep.service_ref === s.id ? 'selected' : ''}>${s.name} (${s.id})</option>`
+    `<option value="${s.id}" ${ep.service_ref === s.id ? 'selected' : ''}>${escapeHtml(s.name)} (${escapeHtml(s.id)})</option>`
   ).join('');
 
   domRefs.inspector.innerHTML = `
     <div class="form-row">
       <label class="form-label">Класс</label>
-      <input class="form-input mono" value="${ep.$class}" readonly>
+      <input class="form-input mono" value="${escapeHtml(ep.$class)}" readonly>
     </div>
     <div class="form-row">
       <label class="form-label">Имя эндпоинта</label>
-      <input class="form-input" value="${ep.name || ''}" data-ep-field="name">
+      <input class="form-input" value="${escapeHtml(ep.name || '')}" data-ep-field="name">
     </div>
     <div class="form-row">
       <label class="form-label">Идентификатор</label>
-      <input class="form-input mono" value="${ep.id}" data-ep-field="id">
+      <input class="form-input mono" value="${escapeHtml(ep.id)}" data-ep-field="id">
     </div>
     <div class="form-row">
       <label class="form-label">Принадлежит сервису</label>
@@ -658,7 +645,7 @@ function renderEndpointInspector() {
     </div>
     ${classFields}
     ${contractHtml}
-    <button class="form-input" style="background:rgba(248,81,73,0.1);border-color:var(--danger);color:var(--danger);cursor:pointer;font-weight:600;" onclick="deleteEndpoint('${ep.id}')">Удалить эндпоинт</button>
+    <button class="form-input danger-btn" data-action="delete-endpoint" data-id="${escapeHtml(ep.id)}">Удалить эндпоинт</button>
   `;
 
   domRefs.inspector.querySelectorAll('[data-ep-field]').forEach(el => {
@@ -670,6 +657,11 @@ function renderEndpointInspector() {
 
       if (f === 'id') {
         if (!v || v === ep.id) { renderAll(); return; }
+        if (!isIdUnique(state.endpoints, v, ep.id)) {
+          alert(`Идентификатор "${v}" уже используется другим эндпоинтом`);
+          renderAll();
+          return;
+        }
         const oldId = ep.id;
         ep.id = v;
         state.connections.forEach(c => { if (c.endpoint_ref === oldId) c.endpoint_ref = v; });
@@ -696,24 +688,24 @@ function renderConnectionInspector() {
   ].map(cls => `<option value="${cls}" ${c.$class === cls ? 'selected' : ''}>${cls}</option>`).join('');
 
   const sourceOptions = state.services.map(s =>
-    `<option value="${s.id}" ${c.source_ref === s.id ? 'selected' : ''}>${s.name} (${s.id})</option>`
+    `<option value="${s.id}" ${c.source_ref === s.id ? 'selected' : ''}>${escapeHtml(s.name)} (${escapeHtml(s.id)})</option>`
   ).join('');
 
   const targetOptions = `<option value="">— не выбрано (повисла) —</option>` +
     state.services.map(s =>
-      `<option value="${s.id}" ${c.target_ref === s.id ? 'selected' : ''}>${s.name} (${s.id})</option>`
+      `<option value="${s.id}" ${c.target_ref === s.id ? 'selected' : ''}>${escapeHtml(s.name)} (${escapeHtml(s.id)})</option>`
     ).join('');
 
   const endpointOptions = `<option value="">— не выбрано —</option>` +
     state.endpoints
       .filter(e => !c.target_ref || e.service_ref === c.target_ref)
-      .map(e => `<option value="${e.id}" ${c.endpoint_ref === e.id ? 'selected' : ''}>${e.id} · ${getEndpointLabel(e)}</option>`)
+      .map(e => `<option value="${e.id}" ${c.endpoint_ref === e.id ? 'selected' : ''}>${escapeHtml(e.id)} · ${escapeHtml(getEndpointLabel(e))}</option>`)
       .join('');
 
   domRefs.inspector.innerHTML = `
     <div class="form-row">
       <label class="form-label">Название сценария</label>
-      <input class="form-input" value="${c.name}" data-conn-field="name">
+      <input class="form-input" value="${escapeHtml(c.name)}" data-conn-field="name">
     </div>
     <div class="form-row">
       <label class="form-label">Класс взаимодействия</label>
@@ -751,14 +743,14 @@ function renderConnectionInspector() {
     ${c.delivery_guarantee ? `
     <div class="form-row">
       <label class="form-label">Delivery guarantee</label>
-      <div class="form-input mono" style="font-size:11px;">${c.delivery_guarantee}</div>
+      <div class="form-input mono" style="font-size:11px;">${escapeHtml(c.delivery_guarantee)}</div>
     </div>` : ''}
     ${isOverride ? `
     <div class="form-row">
       <label class="form-label">Переопределённый response</label>
-      <div class="form-input mono" style="font-size:11px; color:var(--warn);">${JSON.stringify(c.response)}</div>
+      <div class="form-input mono" style="font-size:11px; color:var(--warn);">${escapeHtml(JSON.stringify(c.response))}</div>
     </div>` : ''}
-    <button class="form-input" style="background:rgba(248,81,73,0.1);border-color:var(--danger);color:var(--danger);cursor:pointer;font-weight:600;" onclick="deleteConnection('${c.id}')">Удалить связь явно</button>
+    <button class="form-input danger-btn" data-action="delete-connection" data-id="${escapeHtml(c.id)}">Удалить связь явно</button>
   `;
 
   domRefs.inspector.querySelectorAll('[data-conn-field]').forEach(el => {
@@ -789,7 +781,7 @@ function renderConnectionInspector() {
     b.addEventListener('click', () => {
       c.contract_mode = b.dataset.mode;
       if (c.contract_mode === 'override' && !c.response) {
-        c.response = { status: 200, body_ref: "contract_user_legacy" };
+        c.response = { status: 200, body_ref: state.contracts[0]?.id || "" };
       }
       renderAll();
     });
@@ -797,26 +789,26 @@ function renderConnectionInspector() {
 }
 
 /* ---------- Delete handlers ---------- */
-window.deleteService = function(id) {
+function deleteService(id) {
   state.services = state.services.filter(s => s.id !== id);
   state.endpoints = state.endpoints.filter(e => e.service_ref !== id);
   state.connections = state.connections.filter(c => c.source_ref !== id && c.target_ref !== id);
   selection = { type: null, id: null };
   renderAll();
-};
-window.deleteConnection = function(id) {
+}
+function deleteConnection(id) {
   state.connections = state.connections.filter(c => c.id !== id);
   selection = { type: null, id: null };
   renderAll();
-};
-window.deleteEndpoint = function(id) {
+}
+function deleteEndpoint(id) {
   state.endpoints = state.endpoints.filter(e => e.id !== id);
   state.connections.forEach(c => {
     if (c.endpoint_ref === id) c.endpoint_ref = null;
   });
   selection = { type: null, id: null };
   renderAll();
-};
+}
 
 /* ---------- STATS ---------- */
 function updateStats() {
@@ -845,14 +837,117 @@ function updateStats() {
   }
 }
 
-/* ---------- RENDER ALL ---------- */
+/* ---------- RENDER ALL + AUTOSAVE ---------- */
+let saveTimer = null;
+function scheduleSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveToLocalStorage, CONFIG.AUTOSAVE_DELAY_MS);
+}
+
 function renderAll() {
   renderSidebar();
   renderConnectionsList();
   renderCanvas();
   renderInspector();
   renderJSON();
+  scheduleSave();
 }
+
+/* ============================================================
+   PERSISTENCE: localStorage + Export/Import
+   ============================================================ */
+
+function saveToLocalStorage() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(buildCleanState()));
+  } catch (e) {
+    console.warn('Autosave failed:', e);
+  }
+}
+
+/** Загружает state из произвольного распарсенного объекта. */
+function loadStateFromObject(parsed) {
+  state.mcs_version = parsed.mcs_version || "3.0";
+  state.system_name = parsed.system_name || "Untitled";
+  state.metadata   = parsed.metadata   || { mode: "draft", gui_viewport: { zoom: 1, x: 0, y: 0 } };
+  state.contracts  = Array.isArray(parsed.contracts)  ? parsed.contracts  : [];
+  state.endpoints  = Array.isArray(parsed.endpoints)  ? parsed.endpoints  : [];
+  state.services   = Array.isArray(parsed.services)   ? parsed.services.map(s => ({
+    id: s.id,
+    name: s.name || s.id,
+    gui: s.gui || { x: 100, y: 100, width: 240 }
+  })) : [];
+  state.connections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  selection = { type: null, id: null };
+}
+
+function tryLoadFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    loadStateFromObject(parsed);
+    return true;
+  } catch (e) {
+    console.warn('localStorage load failed:', e);
+    return false;
+  }
+}
+
+function exportToFile() {
+  const clean = buildCleanState();
+  const blob = new Blob([JSON.stringify(clean, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${state.system_name || 'architecture'}.mcs.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function importFromFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,.mcs.json,application/json';
+  input.onchange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        loadStateFromObject(parsed);
+        renderAll();
+      } catch (err) {
+        alert('Не удалось загрузить файл: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+function resetToDefault() {
+  if (!confirm('Сбросить текущую архитектуру и загрузить пример?')) return;
+  state = createDefaultState();
+  selection = { type: null, id: null };
+  renderAll();
+}
+
+/* ============================================================
+   EVENT DELEGATION: data-action
+   ============================================================ */
+
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const { action, id } = btn.dataset;
+  if (action === 'delete-service')    deleteService(id);
+  if (action === 'delete-endpoint')   deleteEndpoint(id);
+  if (action === 'delete-connection') deleteConnection(id);
+});
 
 /* ============================================================
    INTERACTION: HIT-TEST HELPERS
@@ -869,15 +964,13 @@ function findConnectorAt(clientX, clientY) {
 /* ============================================================
    INTERACTION: SELECT + DRAG SERVICES + DRAG WIRE ENDS + SOURCE PLUG
    ============================================================ */
-let dragSvc = null;             // { srv, offsetX, offsetY }
-let dragWireEnd = null;         // { conn, offsetX, offsetY }
-let pendingSourceDrag = null;   // { svcId, startX, startY } — ожидает движения мыши
+let dragSvc = null;
+let dragWireEnd = null;
+let pendingSourceDrag = null;
 
 domRefs.svg.addEventListener('mousedown', (e) => {
   const target = e.target;
 
-  // 0. SOURCE CONNECTOR (шапка сервиса) — потенциальное создание новой связи.
-  //    Не создаём сразу: ждём движения мыши за порог DRAG_THRESHOLD_PX.
   if (target.classList.contains('source-connector')) {
     pendingSourceDrag = {
       svcId: target.dataset.svcId,
@@ -888,7 +981,6 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 1. Свободный конец нити (wire-end) — тащим существующую связь
   if (target.classList.contains('wire-end') && target.classList.contains('free')) {
     const conn = state.connections.find(c => c.id === target.dataset.connId);
     if (!conn) return;
@@ -911,7 +1003,6 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 2. Шапка сервиса — выделяем и начинаем drag
   if (target.dataset.dragService) {
     const srv = state.services.find(s => s.id === target.dataset.dragService);
     if (!srv) return;
@@ -929,7 +1020,6 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 3. Тело нити — выделяем связь
   if (target.dataset.connId) {
     selection = { type: 'connection', id: target.dataset.connId };
     renderAll();
@@ -937,7 +1027,6 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 4. Эндпоинт — выделяем эндпоинт
   const epG = target.closest('.endpoint');
   if (epG) {
     selection = { type: 'endpoint', id: epG.dataset.epId };
@@ -945,7 +1034,6 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 5. Тело сервиса — выделяем сервис
   const svcG = target.closest('.service');
   if (svcG) {
     selection = { type: 'service', id: svcG.dataset.svcId };
@@ -953,13 +1041,11 @@ domRefs.svg.addEventListener('mousedown', (e) => {
     return;
   }
 
-  // 6. Пустое место — сброс
   selection = { type: null, id: null };
   renderAll();
 });
 
 document.addEventListener('mousemove', (e) => {
-  // --- Pending source drag: проверяем порог, создаём связь, переходим в dragWireEnd ---
   if (pendingSourceDrag) {
     const dx = Math.abs(e.clientX - pendingSourceDrag.startX);
     const dy = Math.abs(e.clientY - pendingSourceDrag.startY);
@@ -992,10 +1078,8 @@ document.addEventListener('mousemove', (e) => {
     } else {
       pendingSourceDrag = null;
     }
-    // Проваливаемся в блок dragWireEnd ниже — он отработает на этом же кадре.
   }
 
-  // --- Wire-end drag ---
   if (dragWireEnd) {
     const svgRect = domRefs.svg.getBoundingClientRect();
     const mx = e.clientX - svgRect.left;
@@ -1013,7 +1097,6 @@ document.addEventListener('mousemove', (e) => {
     return;
   }
 
-  // --- Service drag ---
   if (dragSvc) {
     const svgRect = domRefs.svg.getBoundingClientRect();
     dragSvc.srv.gui.x = Math.max(0, e.clientX - svgRect.left - dragSvc.offsetX);
@@ -1024,13 +1107,11 @@ document.addEventListener('mousemove', (e) => {
 });
 
 document.addEventListener('mouseup', (e) => {
-  // --- Pending source drag: клик без движения — ничего не делаем ---
   if (pendingSourceDrag) {
     pendingSourceDrag = null;
     return;
   }
 
-  // --- Wire-end drop ---
   if (dragWireEnd) {
     const conn = dragWireEnd.conn;
     const hovered = findConnectorAt(e.clientX, e.clientY);
@@ -1051,8 +1132,15 @@ document.addEventListener('mouseup', (e) => {
     return;
   }
 
-  // --- Service drop ---
-  dragSvc = null;
+  // Snap service to grid on release
+  if (dragSvc) {
+    dragSvc.srv.gui.x = snapToGrid(dragSvc.srv.gui.x);
+    dragSvc.srv.gui.y = snapToGrid(dragSvc.srv.gui.y);
+    dragSvc = null;
+    renderCanvas();
+    renderJSON();
+    scheduleSave();
+  }
 });
 
 /* ============================================================
@@ -1067,7 +1155,6 @@ document.querySelectorAll('[data-add]').forEach(el => {
       const id = 'srv_new_' + Date.now().toString(36).slice(-4);
       state.services.push({
         id, name: 'New Service',
-        endpoint_refs: [],
         gui: { x: 100 + Math.random() * 400, y: 400 + Math.random() * 200, width: 240 }
       });
       selection = { type: 'service', id };
@@ -1084,19 +1171,19 @@ document.querySelectorAll('[data-add]').forEach(el => {
         newEp = {
           $class: 'RestEndpoint', id: 'ep_new_rest_' + (newEndpointCounter++), name: 'New Endpoint',
           service_ref: srvId, path: '/v1/new',
-          method: 'GET', response: { status: 200, body_ref: 'AuthToken' }
+          method: 'GET', response: { status: 200, body_ref: state.contracts[0]?.id || '' }
         };
       } else if (type === 'grpc') {
         newEp = {
           $class: 'GrpcEndpoint', id: 'ep_new_grpc_' + (newEndpointCounter++), name: 'New RPC',
           service_ref: srvId, package: 'pkg.v1', service_name: 'Svc', rpc_method: 'Call',
-          response: { body_ref: 'PaymentResult' }
+          response: { body_ref: state.contracts[0]?.id || '' }
         };
       } else {
         newEp = {
           $class: 'PubSubChannel', id: 'ch_new_' + (newEndpointCounter++), name: 'New Topic',
           service_ref: srvId, topic_name: 'new.events.v1',
-          broker_type: 'kafka', message_schema_ref: 'OrderCreated'
+          broker_type: 'kafka', message_schema_ref: state.contracts[0]?.id || ''
         };
       }
       state.endpoints.push(newEp);
@@ -1137,13 +1224,13 @@ document.getElementById('btn-draft').addEventListener('click', () => {
   state.metadata.mode = 'draft';
   document.getElementById('btn-draft').classList.add('active');
   document.getElementById('btn-locked').classList.remove('active');
-  updateStats(); renderJSON();
+  updateStats(); renderJSON(); scheduleSave();
 });
 document.getElementById('btn-locked').addEventListener('click', () => {
   state.metadata.mode = 'locked';
   document.getElementById('btn-locked').classList.add('active');
   document.getElementById('btn-draft').classList.remove('active');
-  updateStats(); renderJSON();
+  updateStats(); renderJSON(); scheduleSave();
 });
 
 /* ============================================================
@@ -1164,7 +1251,25 @@ domRefs.connList.addEventListener('click', (e) => {
 });
 
 /* ============================================================
+   COLLAPSIBLE PANELS
+   ============================================================ */
+document.querySelectorAll('[data-toggle]').forEach(el => {
+  el.addEventListener('click', () => {
+    el.parentElement.classList.toggle('collapsed');
+  });
+});
+
+/* ============================================================
+   HEADER BUTTONS: export / import / reset
+   ============================================================ */
+document.getElementById('btn-export')?.addEventListener('click', exportToFile);
+document.getElementById('btn-import')?.addEventListener('click', importFromFile);
+document.getElementById('btn-reset')?.addEventListener('click', resetToDefault);
+
+/* ============================================================
    BOOT
    ============================================================ */
-reindex();
+if (!tryLoadFromLocalStorage()) {
+  // Дефолтное состояние уже установлено в createDefaultState()
+}
 renderAll();

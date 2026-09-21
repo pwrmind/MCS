@@ -93,7 +93,7 @@ main {
   flex: 1;
   display: grid;
   grid-template-columns: 260px 1fr 360px;
-  grid-template-rows: minmax(0, 1fr);   /* ← ФИКС: строка ограничена высотой контейнера */
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   min-height: 0;
 }
@@ -109,7 +109,7 @@ main {
 }
 
 /* ============================================================
-   Сворачивающиеся секции (details/summary)
+   Сворачивающиеся секции (section + .collapsed)
    ============================================================ */
 .panel-section {
   border-bottom: 1px solid var(--border);
@@ -119,13 +119,12 @@ main {
   flex-direction: column;
   overflow: hidden;
 }
-
-/* Открытая grow-секция тянется на свободное место */
-.panel-section.grow[open] {
+.panel-section.grow:not(.collapsed) {
   flex: 1 1 0;
 }
-
-/* Заголовок секции — не сжимается, всегда сверху */
+.panel-section.collapsed > .panel-body {
+  display: none;
+}
 .panel-title {
   font-size: 11px;
   font-weight: 600;
@@ -138,16 +137,12 @@ main {
   display: flex;
   align-items: center;
   gap: 8px;
-  list-style: none;
   transition: color .12s;
   flex-shrink: 0;
   flex-grow: 0;
 }
 .panel-title:hover { color: var(--muted-2); }
-.panel-title::-webkit-details-marker { display: none; }
-.panel-title::marker { content: ''; }
 
-/* Caret-индикатор слева от заголовка */
 .panel-title::before {
   content: '';
   width: 5px;
@@ -160,7 +155,7 @@ main {
   flex-shrink: 0;
   margin-top: -2px;
 }
-details[open] > .panel-title::before {
+.panel-section:not(.collapsed) > .panel-title::before {
   transform: rotate(45deg);
   margin-top: -1px;
 }
@@ -175,14 +170,11 @@ details[open] > .panel-title::before {
   color: var(--muted-2);
 }
 
-/* Базовый panel-body */
 .panel-body {
   padding: 0 14px 14px 14px;
   min-height: 0;
 }
-
-/* Внутри grow-секции panel-body тянется и получает скролл */
-.panel-section.grow .panel-body {
+.panel-section.grow > .panel-body {
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
@@ -470,6 +462,19 @@ details[open] > .panel-title::before {
   r: 9;
 }
 
+.source-connector {
+  fill: var(--bg);
+  stroke: var(--accent);
+  stroke-width: 2;
+  cursor: crosshair;
+  transition: all .12s;
+}
+.source-connector:hover {
+  fill: var(--accent);
+  stroke: var(--accent);
+  r: 8;
+}
+
 .wire {
   fill: none;
   stroke: var(--rest);
@@ -696,22 +701,39 @@ footer {
   border: 1px solid var(--border-2);
 }
 
-/* ============================================================
-   SOURCE CONNECTOR в шапке сервиса.
-   Визуально — как обычный коннектор, но с другим поведением:
-   перетаскивание от него СОЗДАЁТ новую связь.
-   ============================================================ */
-.source-connector {
-  fill: var(--bg);
-  stroke: var(--accent);
-  stroke-width: 2;
-  cursor: crosshair;
-  transition: all .12s;
+/* ===== Header actions ===== */
+.header-actions {
+  display: flex;
+  gap: 4px;
+  margin-right: 8px;
 }
-.source-connector:hover {
-  fill: var(--accent);
-  stroke: var(--accent);
-  r: 8;
+.header-actions button {
+  padding: 6px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  color: var(--muted-2);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all .15s;
+}
+.header-actions button:hover {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.danger-btn {
+  background: rgba(248,81,73,0.1) !important;
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
+  cursor: pointer;
+  font-weight: 600;
+}
+.danger-btn:hover {
+  background: rgba(248,81,73,0.2) !important;
 }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
