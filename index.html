@@ -16,6 +16,14 @@
   </div>
   <span class="version-badge">v3.0 · flat_aggregation</span>
   <div class="spacer"></div>
+
+  <div class="header-actions">
+    <button id="btn-import-openapi" title="Импортировать спецификацию (Swagger 2.0 / OpenAPI 3.x)">⇣ OpenAPI</button>
+    <button id="btn-import" title="Загрузить MCS-файл">↑ Импорт</button>
+    <button id="btn-export" title="Скачать architecture.mcs.json">↓ Экспорт</button>
+    <button id="btn-reset"  title="Сбросить к примеру">↺ Сброс</button>
+  </div>
+
   <div class="mode-toggle">
     <button id="btn-draft" class="active">Черновик</button>
     <button id="btn-locked">Финал</button>
@@ -26,71 +34,71 @@
 <main>
 
   <!-- LEFT PANEL -->
-<aside class="left-panel">
+  <aside class="left-panel">
 
-  <!-- Палитра узлов -->
-  <section class="panel-section">
-    <div class="panel-title" data-toggle>
-      <span>Палитра узлов</span>
-    </div>
-    <div class="panel-body">
-      <div class="palette-item" data-add="service">
-        <div class="palette-icon" style="background:var(--accent)">S</div>
-        <span>Микросервис</span>
+    <!-- Палитра узлов -->
+    <section class="panel-section">
+      <div class="panel-title" data-toggle>
+        <span>Палитра узлов</span>
       </div>
-      <div class="palette-item" data-add="rest">
-        <div class="palette-icon pi-rest">R</div>
-        <span>REST Endpoint</span>
+      <div class="panel-body">
+        <div class="palette-item" data-add="service">
+          <div class="palette-icon" style="background:var(--accent)">S</div>
+          <span>Микросервис</span>
+        </div>
+        <div class="palette-item" data-add="rest">
+          <div class="palette-icon pi-rest">R</div>
+          <span>REST Endpoint</span>
+        </div>
+        <div class="palette-item" data-add="grpc">
+          <div class="palette-icon pi-grpc">G</div>
+          <span>gRPC Endpoint</span>
+        </div>
+        <div class="palette-item" data-add="kafka">
+          <div class="palette-icon pi-kafka">K</div>
+          <span>Kafka Channel</span>
+        </div>
+        <div class="palette-item" data-add="connection">
+          <div class="palette-icon" style="background:linear-gradient(135deg,var(--accent),var(--grpc))">⇄</div>
+          <span>Новая связь</span>
+        </div>
       </div>
-      <div class="palette-item" data-add="grpc">
-        <div class="palette-icon pi-grpc">G</div>
-        <span>gRPC Endpoint</span>
-      </div>
-      <div class="palette-item" data-add="kafka">
-        <div class="palette-icon pi-kafka">K</div>
-        <span>Kafka Channel</span>
-      </div>
-      <div class="palette-item" data-add="connection">
-        <div class="palette-icon" style="background:linear-gradient(135deg,var(--accent),var(--grpc))">⇄</div>
-        <span>Новая связь</span>
-      </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- Сервисы -->
-  <section class="panel-section grow">
-    <div class="panel-title" data-toggle>
-      <span>Сервисы</span>
-      <span class="count-badge" id="svc-count">0</span>
-    </div>
-    <div class="panel-body">
-      <div id="svc-list"></div>
-    </div>
-  </section>
+    <!-- Сервисы -->
+    <section class="panel-section grow">
+      <div class="panel-title" data-toggle>
+        <span>Сервисы</span>
+        <span class="count-badge" id="svc-count">0</span>
+      </div>
+      <div class="panel-body">
+        <div id="svc-list"></div>
+      </div>
+    </section>
 
-  <!-- Связи -->
-  <section class="panel-section grow">
-    <div class="panel-title" data-toggle>
-      <span>Связи</span>
-      <span class="count-badge" id="conn-count">0</span>
-    </div>
-    <div class="panel-body">
-      <div id="conn-list"></div>
-    </div>
-  </section>
+    <!-- Связи -->
+    <section class="panel-section grow">
+      <div class="panel-title" data-toggle>
+        <span>Связи</span>
+        <span class="count-badge" id="conn-count">0</span>
+      </div>
+      <div class="panel-body">
+        <div id="conn-list"></div>
+      </div>
+    </section>
 
-  <!-- Контракты -->
-  <section class="panel-section grow">
-    <div class="panel-title" data-toggle>
-      <span>Контракты</span>
-      <span class="count-badge" id="contract-count">0</span>
-    </div>
-    <div class="panel-body">
-      <div id="contract-list"></div>
-    </div>
-  </section>
+    <!-- Контракты -->
+    <section class="panel-section grow">
+      <div class="panel-title" data-toggle>
+        <span>Контракты</span>
+        <span class="count-badge" id="contract-count">0</span>
+      </div>
+      <div class="panel-body">
+        <div id="contract-list"></div>
+      </div>
+    </section>
 
-</aside>
+  </aside>
 
   <!-- CANVAS -->
   <div class="canvas-wrap" id="canvas-wrap">

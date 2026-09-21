@@ -19,7 +19,7 @@ const CONFIG = {
   AUTOSAVE_DELAY_MS: 500
 };
 
-/* ---------- DEFAULT STATE (используется как fallback при загрузке) ---------- */
+/* ---------- DEFAULT STATE ---------- */
 function createDefaultState() {
   return {
     mcs_version: "3.0",
@@ -138,22 +138,21 @@ function setNested(obj, path, value) {
   }
   cur[parts[parts.length - 1]] = value;
 }
-
-/** Проверка уникальности id в пуле. excludeId — для rename того же объекта. */
 function isIdUnique(pool, id, excludeId) {
   return !pool.some(x => x.id === id && x.id !== excludeId);
 }
-
-/** Округление до сетки. */
 function snapToGrid(v) {
   return Math.round(v / CONFIG.GRID_SIZE) * CONFIG.GRID_SIZE;
 }
-
-/** Endpoint_refs вычисляются на лету. */
 function getEndpointRefsForService(srvId) {
   return state.endpoints
     .filter(e => e.service_ref === srvId)
     .map(e => e.id);
+}
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 /* ---------- SVG HELPER ---------- */
@@ -344,7 +343,7 @@ function getWireColor(conn, ep) {
   return 'var(--accent)';
 }
 
-/* ---------- SIDEBAR: services ---------- */
+/* ---------- SIDEBAR: services + contracts ---------- */
 function renderSidebar() {
   document.getElementById('svc-count').textContent = state.services.length;
   document.getElementById('conn-count').textContent = state.connections.length;
@@ -407,12 +406,6 @@ function renderConnectionsList() {
       </div>
     `;
   }).join('');
-}
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 /* ---------- JSON VIEW ---------- */
@@ -865,7 +858,6 @@ function saveToLocalStorage() {
   }
 }
 
-/** Загружает state из произвольного распарсенного объекта. */
 function loadStateFromObject(parsed) {
   state.mcs_version = parsed.mcs_version || "3.0";
   state.system_name = parsed.system_name || "Untitled";
@@ -1132,7 +1124,6 @@ document.addEventListener('mouseup', (e) => {
     return;
   }
 
-  // Snap service to grid on release
   if (dragSvc) {
     dragSvc.srv.gui.x = snapToGrid(dragSvc.srv.gui.x);
     dragSvc.srv.gui.y = snapToGrid(dragSvc.srv.gui.y);
@@ -1260,10 +1251,309 @@ document.querySelectorAll('[data-toggle]').forEach(el => {
 });
 
 /* ============================================================
-   HEADER BUTTONS: export / import / reset
+   SWAGGER 2.0 + OPENAPI 3.x IMPORT
+   Один файл → один сервис MCS.
+   ============================================================ */
+
+const HTTP_METHODS = ['get', 'post', 'put', 'delete', 'patch'];
+
+function detectSpecDialect(spec) {
+  if (!spec || typeof spec !== 'object') return null;
+  if (spec.swagger === '2.0') return 'swagger2';
+  if (spec.openapi && spec.paths) return 'openapi3';
+  return null;
+}
+
+function importOpenAPI() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.onchange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    let spec;
+    try {
+      spec = JSON.parse(await file.text());
+    } catch (err) {
+      alert('Не удалось распарсить JSON: ' + err.message);
+      return;
+    }
+
+    const preview = specToMCS(spec);
+    if (!preview) return;
+    showImportPreview(preview);
+  };
+  input.click();
+}
+
+function specToMCS(spec) {
+  const dialect = detectSpecDialect(spec);
+  if (!dialect) {
+    alert(
+      'Формат не распознан.\n\n' +
+      'Поддерживаются:\n' +
+      '• Swagger 2.0 ("swagger": "2.0")\n' +
+      '• OpenAPI 3.x ("openapi": "3.x.y")'
+    );
+    return null;
+  }
+
+  const title = (spec.info?.title || '').trim() || 'Imported Service';
+  const baseId = 'srv_' + slugify(title);
+
+  const service = {
+    id: baseId,
+    name: title,
+    gui: { x: 400, y: 400, width: 260 }
+  };
+
+  const definitions = getDefinitions(spec, dialect);
+  const basePath = dialect === 'swagger2' ? (spec.basePath || '') : '';
+
+  // Собираем имена схем, на которые ссылаются 2xx-ответы
+  const usedSchemaNames = new Set();
+  for (const item of Object.values(spec.paths)) {
+    if (!item || typeof item !== 'object') continue;
+    for (const method of HTTP_METHODS) {
+      const op = item[method];
+      if (!op || typeof op !== 'object') continue;
+      const okCode = Object.keys(op.responses || {}).find(c => /^2\d\d$/.test(c));
+      if (!okCode) continue;
+      const ref = extractResponseSchemaRef(op.responses[okCode], dialect);
+      if (ref) usedSchemaNames.add(ref);
+    }
+  }
+
+  // Контракты
+  const contracts = [];
+  const usedContractIds = new Set();
+  for (const name of usedSchemaNames) {
+    if (!definitions[name]) continue;
+    if (usedContractIds.has(name)) continue;
+    const fields = extractFlatFields(definitions[name], definitions);
+    if (Object.keys(fields).length === 0) continue;
+    contracts.push({ id: name, fields });
+    usedContractIds.add(name);
+  }
+
+  // Эндпоинты
+  const endpoints = [];
+  const usedEpIds = new Set();
+
+  for (const [rawPath, item] of Object.entries(spec.paths)) {
+    if (!item || typeof item !== 'object') continue;
+
+    const fullPath = dialect === 'swagger2' ? joinPaths(basePath, rawPath) : rawPath;
+
+    for (const method of HTTP_METHODS) {
+      const op = item[method];
+      if (!op || typeof op !== 'object') continue;
+
+      const rawName = op.operationId || op.summary || `${method.toUpperCase()} ${rawPath}`;
+      let epId = 'ep_' + slugify(op.operationId || `${method}_${rawPath}`);
+      if (usedEpIds.has(epId)) {
+        let n = 2;
+        while (usedEpIds.has(`${epId}_${n}`)) n++;
+        epId = `${epId}_${n}`;
+      }
+      usedEpIds.add(epId);
+
+      const okCode = Object.keys(op.responses || {}).find(c => /^2\d\d$/.test(c));
+      const okResp = okCode ? op.responses[okCode] : null;
+      const bodyRef = okResp ? extractResponseSchemaRef(okResp, dialect) : null;
+
+      endpoints.push({
+        $class: 'RestEndpoint',
+        id: epId,
+        name: rawName,
+        service_ref: service.id,
+        path: fullPath,
+        method: method.toUpperCase(),
+        response: {
+          status: okCode ? parseInt(okCode, 10) : 200,
+          body_ref: bodyRef && usedContractIds.has(bodyRef) ? bodyRef : null
+        }
+      });
+    }
+  }
+
+  if (endpoints.length === 0) {
+    alert('В спецификации не найдено ни одной операции.');
+    return null;
+  }
+
+  return { dialect, basePath, service, endpoints, contracts };
+}
+
+function getDefinitions(spec, dialect) {
+  if (dialect === 'swagger2') return spec.definitions || {};
+  return spec.components?.schemas || {};
+}
+
+function extractResponseSchemaRef(response, dialect) {
+  if (!response) return null;
+  const schema = dialect === 'swagger2'
+    ? response.schema
+    : response.content?.['application/json']?.schema;
+  if (!schema) return null;
+  if (schema.$ref) return refName(schema.$ref);
+  if (schema.type === 'array' && schema.items?.$ref) return refName(schema.items.$ref);
+  return null;
+}
+
+function refName($ref) {
+  return String($ref).replace(/^#\/(definitions|components\/schemas)\//, '');
+}
+
+function extractFlatFields(schema, allSchemas) {
+  if (!schema || typeof schema !== 'object') return {};
+  if (schema.$ref) {
+    const name = refName(schema.$ref);
+    return extractFlatFields(allSchemas[name], allSchemas);
+  }
+  const fields = {};
+  for (const [key, val] of Object.entries(schema.properties || {})) {
+    fields[key] = typeName(val);
+  }
+  return fields;
+}
+
+function typeName(s) {
+  if (!s || typeof s !== 'object') return 'any';
+  if (s.$ref) return refName(s.$ref);
+  if (s.type === 'array') return (s.items ? typeName(s.items) : 'any') + '[]';
+  if (s.enum) return `enum[${s.enum.join(',')}]`;
+  if (s.type === 'object') return 'object';
+  if (s.format) return `${s.type}(${s.format})`;
+  return s.type || 'any';
+}
+
+function joinPaths(a, b) {
+  const left = (a || '').replace(/\/+$/, '');
+  const right = (b || '').replace(/^\/+/, '');
+  if (!left) return '/' + right;
+  if (!right) return left;
+  return left + '/' + right;
+}
+
+function slugify(s) {
+  return String(s)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40) || 'unnamed';
+}
+
+/* ---------- Preview modal ---------- */
+
+function showImportPreview(preview) {
+  const { service, endpoints, contracts, dialect, basePath } = preview;
+
+  const svcCollision = state.services.some(s => s.id === service.id);
+  const epCollisions = endpoints.filter(e => state.endpoints.some(x => x.id === e.id));
+  const ctCollisions = contracts.filter(c => state.contracts.some(x => x.id === c.id));
+
+  const dialectLabel = dialect === 'swagger2' ? 'Swagger 2.0' : 'OpenAPI 3.x';
+  const dialectClass = dialect === 'swagger2' ? 'swagger' : 'openapi';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h3>
+          Импорт: ${escapeHtml(service.name)}
+          <span class="modal-dialect modal-dialect-${dialectClass}">${dialectLabel}</span>
+        </h3>
+        <button class="modal-close" data-close>×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-stats">
+          <div><span class="modal-stat-num">1</span><span class="modal-stat-label">сервис</span></div>
+          <div><span class="modal-stat-num">${endpoints.length}</span><span class="modal-stat-label">эндпоинтов</span></div>
+          <div><span class="modal-stat-num">${contracts.length}</span><span class="modal-stat-label">контрактов</span></div>
+        </div>
+
+        ${basePath ? `<div class="modal-info">basePath <code>${escapeHtml(basePath)}</code> добавлен ко всем путям.</div>` : ''}
+        ${svcCollision ? `<div class="modal-warn">Сервис с id <code>${escapeHtml(service.id)}</code> уже существует — он будет пропущен.</div>` : ''}
+
+        <div class="modal-section-title">Эндпоинты</div>
+        <div class="modal-list">
+          ${endpoints.map(e => `
+            <div class="modal-list-item">
+              <span class="modal-badge modal-badge-${e.method.toLowerCase()}">${e.method}</span>
+              <span class="modal-path">${escapeHtml(e.path)}</span>
+              <span class="modal-name">${escapeHtml(e.name)}</span>
+              ${epCollisions.includes(e) ? '<span class="modal-skip">дубликат</span>' : ''}
+            </div>
+          `).join('')}
+        </div>
+
+        ${contracts.length > 0 ? `
+          <div class="modal-section-title">Контракты</div>
+          <div class="modal-list">
+            ${contracts.map(c => `
+              <div class="modal-list-item">
+                <span class="modal-name">${escapeHtml(c.id)}</span>
+                <span class="modal-fields">${Object.entries(c.fields).map(([k, v]) =>
+                  `<span class="field-chip">${escapeHtml(k)}: ${escapeHtml(v)}</span>`
+                ).join('')}</span>
+                ${ctCollisions.includes(c) ? '<span class="modal-skip">дубликат</span>' : ''}
+              </div>
+            `).join('')}
+          </div>
+        ` : ''}
+      </div>
+      <div class="modal-footer">
+        <button class="modal-btn" data-close>Отмена</button>
+        <button class="modal-btn modal-btn-primary" data-apply>Импортировать</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  const close = () => overlay.remove();
+  overlay.querySelectorAll('[data-close]').forEach(el => el.addEventListener('click', close));
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-apply]').addEventListener('click', () => {
+    applyOpenAPIImport(preview);
+    close();
+  });
+}
+
+function applyOpenAPIImport(preview) {
+  const { service, endpoints, contracts } = preview;
+
+  if (!state.services.some(s => s.id === service.id)) {
+    const maxX = state.services.reduce((m, s) => Math.max(m, s.gui.x + s.gui.width), 0);
+    service.gui.x = maxX + 80;
+    service.gui.y = 100;
+    state.services.push(service);
+  }
+
+  for (const c of contracts) {
+    if (!state.contracts.some(x => x.id === c.id)) state.contracts.push(c);
+  }
+
+  for (const e of endpoints) {
+    if (!state.endpoints.some(x => x.id === e.id)) state.endpoints.push(e);
+  }
+
+  if (state.services.some(s => s.id === service.id)) {
+    selection = { type: 'service', id: service.id };
+  }
+
+  renderAll();
+}
+
+/* ============================================================
+   HEADER BUTTONS: export / import / openapi / reset
    ============================================================ */
 document.getElementById('btn-export')?.addEventListener('click', exportToFile);
 document.getElementById('btn-import')?.addEventListener('click', importFromFile);
+document.getElementById('btn-import-openapi')?.addEventListener('click', importOpenAPI);
 document.getElementById('btn-reset')?.addEventListener('click', resetToDefault);
 
 /* ============================================================
