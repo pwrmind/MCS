@@ -155,6 +155,25 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
+/** Где используется контракт — возвращает массив читаемых ссылок. */
+function findContractUsages(contractId) {
+  const usages = [];
+  state.endpoints.forEach(ep => {
+    if (ep.response?.body_ref === contractId) {
+      usages.push({ type: 'endpoint', id: ep.id, label: `${ep.id} · response` });
+    }
+    if (ep.message_schema_ref === contractId) {
+      usages.push({ type: 'endpoint', id: ep.id, label: `${ep.id} · message schema` });
+    }
+  });
+  state.connections.forEach(conn => {
+    if (conn.response?.body_ref === contractId) {
+      usages.push({ type: 'connection', id: conn.id, label: `${conn.id} · override response` });
+    }
+  });
+  return usages;
+}
+
 /* ---------- SVG HELPER ---------- */
 function createSVGElement(tag, attributes) {
   const element = document.createElementNS(SVGNS, tag);
@@ -357,14 +376,15 @@ function renderSidebar() {
     </div>`
   ).join('');
 
-  domRefs.contractList.innerHTML = state.contracts.map(c =>
-    `<div class="contract-item" data-contract="${c.id}">
+  domRefs.contractList.innerHTML = state.contracts.map(c => {
+    const isSelected = selection.type === 'contract' && selection.id === c.id;
+    return `<div class="contract-item${isSelected?' selected':''}" data-contract="${c.id}">
       <div class="contract-id">${escapeHtml(c.id)}</div>
       <div class="contract-fields">
-        ${Object.entries(c.fields).map(([k,v]) => `<span class="field-chip">${escapeHtml(k)}: ${escapeHtml(v)}</span>`).join('')}
+        ${Object.entries(c.fields).map(([k,v]) => `<span class="field-chip">${escapeHtml(k)}: ${escapeHtml(v)}</span>`).join('') || '<span style="color:var(--muted);font-size:10px;">пусто</span>'}
       </div>
-    </div>`
-  ).join('');
+    </div>`;
+  }).join('');
 }
 
 /* ---------- SIDEBAR: connections ---------- */
@@ -454,9 +474,11 @@ function renderInspector() {
     renderEndpointInspector();
   } else if (selection.type === 'connection') {
     renderConnectionInspector();
+  } else if (selection.type === 'contract') {
+    renderContractInspector();
   } else {
     domRefs.inspector.innerHTML = `<div style="color:var(--muted); font-size:12px; text-align:center; padding:20px 0;">
-      Выберите сервис, эндпоинт или связь
+      Выберите сервис, эндпоинт, связь или контракт
     </div>`;
   }
 }
@@ -781,6 +803,142 @@ function renderConnectionInspector() {
   });
 }
 
+/* ---------- Contract inspector (NEW) ---------- */
+
+function renderContractInspector() {
+  const ct = state.contracts.find(x => x.id === selection.id);
+  if (!ct) return;
+
+  const fieldNames = Object.keys(ct.fields);
+  const usages = findContractUsages(ct.id);
+
+  const fieldRows = fieldNames.map(name => `
+    <div class="field-row">
+      <input class="form-input mono field-name"
+             value="${escapeHtml(name)}"
+             data-field-old="${escapeHtml(name)}"
+             data-field-part="name">
+      <input class="form-input mono field-type"
+             value="${escapeHtml(ct.fields[name])}"
+             data-field-old="${escapeHtml(name)}"
+             data-field-part="type">
+      <button class="field-remove"
+              data-field-remove="${escapeHtml(name)}"
+              title="Удалить поле">×</button>
+    </div>
+  `).join('');
+
+  domRefs.inspector.innerHTML = `
+    <div class="form-row">
+      <label class="form-label">Идентификатор контракта</label>
+      <input class="form-input mono" value="${escapeHtml(ct.id)}" data-contract-field="id">
+    </div>
+
+    <div class="form-row">
+      <label class="form-label">Поля (${fieldNames.length})</label>
+      <div class="field-list">
+        ${fieldRows || '<div style="color:var(--muted);font-size:11px;padding:4px 0;">нет полей</div>'}
+      </div>
+      <button class="form-input add-field-btn" data-field-add>+ Добавить поле</button>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label">Используется в (${usages.length})</label>
+      <div class="usage-list">
+        ${usages.length
+          ? usages.map(u => `
+              <div class="usage-item" data-usage-type="${u.type}" data-usage-id="${escapeHtml(u.id)}">
+                <span class="usage-type usage-${u.type}">${u.type === 'endpoint' ? 'EP' : 'CONN'}</span>
+                <span class="usage-label">${escapeHtml(u.label)}</span>
+              </div>
+            `).join('')
+          : '<div style="color:var(--muted);font-size:11px;padding:4px 0;">нигде не используется</div>'}
+      </div>
+    </div>
+
+    <button class="form-input danger-btn" data-action="delete-contract" data-id="${escapeHtml(ct.id)}">Удалить контракт</button>
+  `;
+
+  // --- Rename id (with cascade into endpoints / connections) ---
+  const idEl = domRefs.inspector.querySelector('[data-contract-field="id"]');
+  idEl?.addEventListener('change', () => {
+    const v = idEl.value.trim();
+    if (!v || v === ct.id) { renderAll(); return; }
+    if (!isIdUnique(state.contracts, v, ct.id)) {
+      alert(`Идентификатор "${v}" уже используется другим контрактом`);
+      renderAll();
+      return;
+    }
+    const oldId = ct.id;
+    ct.id = v;
+    state.endpoints.forEach(ep => {
+      if (ep.response?.body_ref === oldId) ep.response.body_ref = v;
+      if (ep.message_schema_ref === oldId) ep.message_schema_ref = v;
+    });
+    state.connections.forEach(conn => {
+      if (conn.response?.body_ref === oldId) conn.response.body_ref = v;
+    });
+    selection.id = v;
+    renderAll();
+  });
+
+  // --- Edit field name / type ---
+  domRefs.inspector.querySelectorAll('[data-field-part]').forEach(el => {
+    el.addEventListener('change', () => {
+      const oldName = el.dataset.fieldOld;
+      const part = el.dataset.fieldPart;
+      if (!(oldName in ct.fields)) { renderAll(); return; }
+
+      const newVal = el.value.trim();
+      if (part === 'name') {
+        if (!newVal) { renderAll(); return; }
+        if (newVal !== oldName && newVal in ct.fields) {
+          alert(`Поле "${newVal}" уже существует в этом контракте`);
+          renderAll();
+          return;
+        }
+        // Rebuild fields, preserving order
+        const rebuilt = {};
+        for (const [k, v] of Object.entries(ct.fields)) {
+          if (k === oldName) rebuilt[newVal] = v;
+          else rebuilt[k] = v;
+        }
+        ct.fields = rebuilt;
+      } else {
+        ct.fields[oldName] = newVal || 'any';
+      }
+      renderAll();
+    });
+  });
+
+  // --- Remove field ---
+  domRefs.inspector.querySelectorAll('[data-field-remove]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const name = btn.dataset.fieldRemove;
+      delete ct.fields[name];
+      renderAll();
+    });
+  });
+
+  // --- Add field ---
+  const addBtn = domRefs.inspector.querySelector('[data-field-add]');
+  addBtn?.addEventListener('click', () => {
+    let n = 1;
+    let key = 'new_field';
+    while (key in ct.fields) key = 'new_field_' + (n++);
+    ct.fields[key] = 'string';
+    renderAll();
+  });
+
+  // --- Jump to usage ---
+  domRefs.inspector.querySelectorAll('[data-usage-type]').forEach(el => {
+    el.addEventListener('click', () => {
+      selection = { type: el.dataset.usageType, id: el.dataset.usageId };
+      renderAll();
+    });
+  });
+}
+
 /* ---------- Delete handlers ---------- */
 function deleteService(id) {
   state.services = state.services.filter(s => s.id !== id);
@@ -798,6 +956,19 @@ function deleteEndpoint(id) {
   state.endpoints = state.endpoints.filter(e => e.id !== id);
   state.connections.forEach(c => {
     if (c.endpoint_ref === id) c.endpoint_ref = null;
+  });
+  selection = { type: null, id: null };
+  renderAll();
+}
+function deleteContract(id) {
+  state.contracts = state.contracts.filter(c => c.id !== id);
+  // Nullify references, don't touch the object itself
+  state.endpoints.forEach(ep => {
+    if (ep.response?.body_ref === id) ep.response.body_ref = null;
+    if (ep.message_schema_ref === id) ep.message_schema_ref = null;
+  });
+  state.connections.forEach(conn => {
+    if (conn.response?.body_ref === id) conn.response.body_ref = null;
   });
   selection = { type: null, id: null };
   renderAll();
@@ -939,6 +1110,7 @@ document.addEventListener('click', (e) => {
   if (action === 'delete-service')    deleteService(id);
   if (action === 'delete-endpoint')   deleteEndpoint(id);
   if (action === 'delete-connection') deleteConnection(id);
+  if (action === 'delete-contract')   deleteContract(id);
 });
 
 /* ============================================================
@@ -1241,6 +1413,13 @@ domRefs.connList.addEventListener('click', (e) => {
   renderAll();
 });
 
+domRefs.contractList.addEventListener('click', (e) => {
+  const item = e.target.closest('[data-contract]');
+  if (!item) return;
+  selection = { type: 'contract', id: item.dataset.contract };
+  renderAll();
+});
+
 /* ============================================================
    COLLAPSIBLE PANELS
    ============================================================ */
@@ -1252,7 +1431,6 @@ document.querySelectorAll('[data-toggle]').forEach(el => {
 
 /* ============================================================
    SWAGGER 2.0 + OPENAPI 3.x IMPORT
-   Один файл → один сервис MCS.
    ============================================================ */
 
 const HTTP_METHODS = ['get', 'post', 'put', 'delete', 'patch'];
@@ -1311,7 +1489,6 @@ function specToMCS(spec) {
   const definitions = getDefinitions(spec, dialect);
   const basePath = dialect === 'swagger2' ? (spec.basePath || '') : '';
 
-  // Собираем имена схем, на которые ссылаются 2xx-ответы
   const usedSchemaNames = new Set();
   for (const item of Object.values(spec.paths)) {
     if (!item || typeof item !== 'object') continue;
@@ -1325,7 +1502,6 @@ function specToMCS(spec) {
     }
   }
 
-  // Контракты
   const contracts = [];
   const usedContractIds = new Set();
   for (const name of usedSchemaNames) {
@@ -1337,7 +1513,6 @@ function specToMCS(spec) {
     usedContractIds.add(name);
   }
 
-  // Эндпоинты
   const endpoints = [];
   const usedEpIds = new Set();
 

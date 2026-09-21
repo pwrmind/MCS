@@ -927,6 +927,7 @@ footer {
   vertical-align: middle;
   text-transform: uppercase;
 }
+
 .modal-dialect-swagger  { background: rgba(63,185,80,0.2);  color: var(--ok); }
 .modal-dialect-openapi  { background: rgba(74,124,255,0.2); color: var(--accent); }
 
@@ -934,3 +935,102 @@ footer {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #3e4d61; }
+
+/* ============================================================
+   CONTRACT INSPECTOR
+   ============================================================ */
+
+/* Подсветка выбранного контракта в левой панели */
+.contract-item.selected {
+  border-color: var(--accent);
+  background: rgba(74,124,255,0.1);
+}
+
+/* Список полей контракта в инспекторе */
+.field-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 26px;
+  gap: 6px;
+  align-items: center;
+}
+.field-row .form-input {
+  padding: 5px 8px;
+  font-size: 11px;
+  margin: 0;
+}
+.field-remove {
+  width: 26px;
+  height: 26px;
+  background: rgba(248,81,73,0.1);
+  border: 1px solid rgba(248,81,73,0.3);
+  border-radius: 5px;
+  color: var(--danger);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  font-family: inherit;
+  transition: background .12s;
+}
+.field-remove:hover {
+  background: rgba(248,81,73,0.25);
+}
+.add-field-btn {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--muted-2);
+  text-align: center;
+}
+.add-field-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Список мест использования контракта */
+.usage-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.usage-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color .12s;
+}
+.usage-item:hover {
+  border-color: var(--accent);
+}
+.usage-type {
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.usage-endpoint   { background: rgba(74,124,255,0.2); color: var(--accent); }
+.usage-connection { background: rgba(163,113,247,0.2); color: var(--grpc); }
+.usage-label {
+  font-family: 'SF Mono', Monaco, monospace;
+  color: var(--muted-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
